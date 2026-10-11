@@ -24,8 +24,8 @@ import re
 from pathlib import Path
 
 CAMPUS_ID = "northeastern-boston"
-RAW_PATH = Path(__file__).parent.parent / "raw" / "boston_buildings.geojson"
-BUILDINGS_CSV = Path(__file__).parent.parent.parent / "data" / CAMPUS_ID / "buildings.csv"
+RAW_PATH = Path(__file__).parent.parent.parent / "raw" / CAMPUS_ID / "boston_buildings.geojson"
+BUILDINGS_CSV = Path(__file__).parent.parent.parent.parent / "data" / CAMPUS_ID / "buildings.csv"
 
 
 def slugify(text: str) -> str:

@@ -11,7 +11,7 @@ import csv
 from pathlib import Path
 
 CAMPUS_ID = "northeastern-boston"
-DATA_DIR = Path(__file__).parent.parent.parent / "data" / CAMPUS_ID
+DATA_DIR = Path(__file__).parent.parent.parent.parent / "data" / CAMPUS_ID
 
 CORRECTIONS = {
     "hurtig-hall": "ht",

@@ -10,8 +10,8 @@ import re
 from pathlib import Path
 
 CAMPUS_ID = "northeastern-boston"
-RAW_PATH = Path(__file__).parent.parent / "raw" / "accessible_entrances.geojson"
-OUT_DIR = Path(__file__).parent.parent.parent / "data" / CAMPUS_ID
+RAW_PATH = Path(__file__).parent.parent.parent / "raw" / CAMPUS_ID / "accessible_entrances.geojson"
+OUT_DIR = Path(__file__).parent.parent.parent.parent / "data" / CAMPUS_ID
 
 
 def slugify(text: str) -> str:
