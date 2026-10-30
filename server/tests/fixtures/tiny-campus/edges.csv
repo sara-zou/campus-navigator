@@ -1,0 +1,7 @@
+from_node,to_node,cost,cost_unit,edge_type,accessible
+eA1,w1,44.5,meters,connector,True
+w1,w2,82.8,meters,footway,True
+w2,w3,222.4,meters,footway,True
+w3,eA2,93.7,meters,connector,True
+w1,w3,240.0,meters,steps,False
+i1,i2,55.6,meters,footway,True

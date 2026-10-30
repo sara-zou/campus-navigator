@@ -1,4 +1,6 @@
 data-prep/.venv/
+server/.venv/
 __pycache__/
 *.pyc
 data-prep/scripts/**/cache/
+CLAUDE.md

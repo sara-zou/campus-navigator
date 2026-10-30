@@ -1,0 +1,3 @@
+poi_id,node_id,name,category,building_id,floor,accessible,notes
+poi_eA1,eA1,Building A (South Entrance),entrance,bA,0,True,
+poi_eA2,eA2,Building A (North Entrance),entrance,bA,0,True,

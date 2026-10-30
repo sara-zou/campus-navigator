@@ -1,0 +1,8 @@
+node_id,campus_id,building_id,floor,coord_system,x_or_lat,y_or_lon,type
+eA1,tiny-campus,bA,0,latlon,42.0009,-71.0005,entrance
+eA2,tiny-campus,bA,0,latlon,42.0021,-71.0005,entrance
+w1,tiny-campus,,0,latlon,42.0005,-71.0005,waypoint
+w2,tiny-campus,,0,latlon,42.0005,-71.0015,waypoint
+w3,tiny-campus,,0,latlon,42.0025,-71.0015,waypoint
+i1,tiny-campus,,0,latlon,42.0050,-71.0050,waypoint
+i2,tiny-campus,,0,latlon,42.0055,-71.0050,waypoint
