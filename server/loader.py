@@ -4,8 +4,20 @@ One pass per file: read a row, check it, convert it, store it. Any bad row raise
 LoadError naming the file and row; a campus is only built once all its files pass.
 """
 import csv
+import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
+
+BUILDING_COLS = ["building_id", "name", "polygon_geojson"]
+GEOMETRY_TYPES = {"Polygon", "MultiPolygon"}
+
+
+@dataclass(frozen=True)
+class Building:
+    id: str
+    name: str
+    geometry: dict  # parsed GeoJSON Polygon or MultiPolygon, [lon, lat] order
 
 
 class LoadError(Exception):
@@ -46,6 +58,12 @@ def read_rows(path, required_cols):
             yield row_num, {col: cell.strip() for col, cell in zip(header, cells)}
 
 
+def require(val, file, row, col):
+    if val == "":
+        raise LoadError(file, row, f"{col} is required")
+    return val
+
+
 def to_float(val, file, row, col):
     try:
         x = float(val)
@@ -78,3 +96,52 @@ def check_one_of(val, allowed, file, row, col):
     if val not in allowed:
         raise LoadError(file, row, f"{col} must be one of {sorted(allowed)}, got {val!r}")
     return val
+
+
+# --- buildings ---
+
+def check_geometry(geom, file, row):
+    """Raise unless geom is a well-formed GeoJSON Polygon or MultiPolygon with valid lon/lat points."""
+    def fail(msg):
+        raise LoadError(file, row, f"polygon_geojson: {msg}")
+
+    if not isinstance(geom, dict) or geom.get("type") not in GEOMETRY_TYPES:
+        fail(f"type must be one of {sorted(GEOMETRY_TYPES)}")
+    coords = geom.get("coordinates")
+    polygons = [coords] if geom["type"] == "Polygon" else coords
+    if not isinstance(polygons, list) or not polygons:
+        fail("coordinates must be a non-empty list")
+
+    for polygon in polygons:
+        if not isinstance(polygon, list) or not polygon:
+            fail("each polygon must be a non-empty list of rings")
+        for ring in polygon:
+            if not isinstance(ring, list) or len(ring) < 4:
+                fail("each ring must have at least 4 points")
+            for point in ring:
+                # GeoJSON allows an optional third value (altitude)
+                if not (isinstance(point, list) and len(point) in (2, 3)
+                        and all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in point)):
+                    fail(f"point must be [lon, lat], got {point!r}")
+                lon, lat = point[0], point[1]
+                if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+                    fail(f"point out of lon/lat range: {point!r}")
+            if ring[0] != ring[-1]:
+                fail("ring is not closed (first point must equal last)")
+
+
+def load_buildings(campus_dir):
+    file = "buildings.csv"
+    buildings = {}
+    for row, r in read_rows(Path(campus_dir) / file, BUILDING_COLS):
+        building_id = require(r["building_id"], file, row, "building_id")
+        if building_id in buildings:
+            raise LoadError(file, row, f"duplicate building_id {building_id!r}")
+        name = require(r["name"], file, row, "name")
+        try:
+            geometry = json.loads(require(r["polygon_geojson"], file, row, "polygon_geojson"))
+        except json.JSONDecodeError as e:
+            raise LoadError(file, row, f"polygon_geojson is not valid JSON: {e.msg}") from None
+        check_geometry(geometry, file, row)
+        buildings[building_id] = Building(building_id, name, geometry)
+    return buildings
