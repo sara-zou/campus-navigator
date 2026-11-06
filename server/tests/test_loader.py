@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 
 from loader import (
-    BUILDING_COLS, LoadError, check_one_of, load_buildings, read_rows, require,
-    to_bool_or_none, to_float, to_int,
+    BUILDING_COLS, LoadError, check_latlon, check_one_of, load_buildings, load_nodes, read_rows,
+    require, to_bool_or_none, to_float, to_int,
 )
 
 
@@ -180,7 +180,7 @@ def test_load_buildings_duplicate_id_reports_second_row(broken_campus):
     ({"type": "Polygon", "coordinates": [SQUARE[:-1] + [[-71.0005, 42.001]]]}, "ring is not closed"),
     ({"type": "Polygon", "coordinates": [[["-71.0", 42.0]] + SQUARE]}, "point must be"),
     ({"type": "Polygon", "coordinates": [[[-71.0]] + SQUARE]}, "point must be"),
-    ({"type": "Polygon", "coordinates": [[[-71.0, 95.0], [-71.0, 42.0], [-71.1, 42.0], [-71.0, 95.0]]]}, "point out of lon/lat range"),
+    ({"type": "Polygon", "coordinates": [[[-71.0, 95.0], [-71.0, 42.0], [-71.1, 42.0], [-71.0, 95.0]]]}, r"point \[-71.0, 95.0\]: out of lat/lon range"),
 ])
 def test_load_buildings_bad_geometry(broken_campus, geom, message):
     campus_dir = broken_campus("buildings.csv", set_cell(2, "polygon_geojson", json.dumps(geom)))
@@ -192,3 +192,73 @@ def test_load_buildings_real_northeastern():
     buildings = load_buildings(REAL_DATA / "northeastern-boston")
     assert len(buildings) == 104
     assert buildings["se"].geometry["type"] == "MultiPolygon"
+
+
+def test_check_latlon_valid():
+    check_latlon(42.0, -71.0, "f.csv", 2, "coords")
+
+
+@pytest.mark.parametrize("lat, lon", [(95.0, -71.0), (-90.1, 0.0), (42.0, 181.0), (42.0, -180.5)])
+def test_check_latlon_invalid(lat, lon):
+    with pytest.raises(LoadError, match="f.csv:2: coords: out of lat/lon range"):
+        check_latlon(lat, lon, "f.csv", 2, "coords")
+
+
+# --- load_nodes ---
+# nodes.csv fixture lines: 2 eA1, 3 eA2, 4 w1, 5 w2, 6 w3, 7 i1, 8 i2
+
+def load_fixture_nodes(campus_dir):
+    return load_nodes(campus_dir, load_buildings(campus_dir))
+
+
+def test_load_nodes_fixture(tiny_campus):
+    nodes, entrances = load_fixture_nodes(tiny_campus)
+    assert len(nodes) == 7
+    assert entrances == {"bA": ["eA1", "eA2"]}
+    assert nodes["w1"].building_id is None
+    assert nodes["eA1"].floor == 0
+    assert nodes["eA1"].x_or_lat == 42.0009 and nodes["eA1"].y_or_lon == -71.0005
+
+
+@pytest.mark.parametrize("line, col, value", [
+    (4, "floor", "-1"),          # basement
+    (4, "building_id", "bB"),    # waypoint inside a building
+    (2, "floor", "2"),           # entrance not on floor 0
+    (4, "type", "gate"),         # open type set
+])
+def test_load_nodes_accepts(broken_campus, line, col, value):
+    nodes, _ = load_fixture_nodes(broken_campus("nodes.csv", set_cell(line, col, value)))
+    assert len(nodes) == 7
+
+
+def test_load_nodes_non_entrance_type_is_not_indexed(broken_campus):
+    _, entrances = load_fixture_nodes(broken_campus("nodes.csv", set_cell(2, "type", "gate")))
+    assert entrances == {"bA": ["eA2"]}
+
+
+@pytest.mark.parametrize("line, col, value, message", [
+    (2, "node_id", "", "node_id is required"),
+    (3, "node_id", "eA1", "duplicate node_id 'eA1'"),
+    (2, "campus_id", "", "campus_id is required"),
+    (2, "campus_id", "other-campus", "campus_id must match folder 'tiny-campus', got 'other-campus'"),
+    (2, "building_id", "bZ", "unknown building_id 'bZ'"),
+    (2, "floor", "1.5", "floor must be an integer"),
+    (2, "coord_system", "local", "coord_system must be one of"),
+    (2, "x_or_lat", "abc", "x_or_lat must be a number"),
+    (2, "y_or_lon", "", "y_or_lon must be a number"),
+    (2, "x_or_lat", "95", "x_or_lat/y_or_lon: out of lat/lon range"),
+    (4, "type", "", "type is required"),
+    (2, "building_id", "", "entrance must have a building_id"),
+])
+def test_load_nodes_rejects(broken_campus, line, col, value, message):
+    campus_dir = broken_campus("nodes.csv", set_cell(line, col, value))
+    with pytest.raises(LoadError, match=f"nodes.csv:{line}: {message}"):
+        load_fixture_nodes(campus_dir)
+
+
+def test_load_nodes_real_northeastern():
+    campus_dir = REAL_DATA / "northeastern-boston"
+    nodes, entrances = load_nodes(campus_dir, load_buildings(campus_dir))
+    assert len(nodes) == 2060
+    assert sum(len(ids) for ids in entrances.values()) == 82
+    assert len(entrances) == 59

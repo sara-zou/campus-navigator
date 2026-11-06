@@ -12,12 +12,27 @@ from pathlib import Path
 BUILDING_COLS = ["building_id", "name", "polygon_geojson"]
 GEOMETRY_TYPES = {"Polygon", "MultiPolygon"}
 
+NODE_COLS = ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type"]
+COORD_SYSTEMS = {"latlon"}  # "local" (indoor x/y) gets added with indoor support
+
 
 @dataclass(frozen=True)
 class Building:
     id: str
     name: str
     geometry: dict  # parsed GeoJSON Polygon or MultiPolygon, [lon, lat] order
+
+
+@dataclass(frozen=True)
+class Node:
+    id: str
+    campus_id: str
+    building_id: str | None  # None for outdoor waypoints
+    floor: int               # integer index; negatives are basements
+    coord_system: str
+    x_or_lat: float
+    y_or_lon: float
+    type: str                # open set; only "entrance" has special rules
 
 
 class LoadError(Exception):
@@ -98,6 +113,11 @@ def check_one_of(val, allowed, file, row, col):
     return val
 
 
+def check_latlon(lat, lon, file, row, label):
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise LoadError(file, row, f"{label}: out of lat/lon range (lat={lat}, lon={lon})")
+
+
 # --- buildings ---
 
 def check_geometry(geom, file, row):
@@ -123,9 +143,7 @@ def check_geometry(geom, file, row):
                 if not (isinstance(point, list) and len(point) in (2, 3)
                         and all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in point)):
                     fail(f"point must be [lon, lat], got {point!r}")
-                lon, lat = point[0], point[1]
-                if not (-180 <= lon <= 180 and -90 <= lat <= 90):
-                    fail(f"point out of lon/lat range: {point!r}")
+                check_latlon(point[1], point[0], file, row, f"polygon_geojson: point {point!r}")
             if ring[0] != ring[-1]:
                 fail("ring is not closed (first point must equal last)")
 
@@ -145,3 +163,40 @@ def load_buildings(campus_dir):
         check_geometry(geometry, file, row)
         buildings[building_id] = Building(building_id, name, geometry)
     return buildings
+
+
+# --- nodes ---
+
+def load_nodes(campus_dir, buildings):
+    """Return (nodes by id, building_id -> [entrance node ids]). Buildings without entrances have no key."""
+    file = "nodes.csv"
+    expected_campus_id = Path(campus_dir).name
+    nodes, entrances_by_building = {}, {}
+    for row, r in read_rows(Path(campus_dir) / file, NODE_COLS):
+        node_id = require(r["node_id"], file, row, "node_id")
+        if node_id in nodes:
+            raise LoadError(file, row, f"duplicate node_id {node_id!r}")
+
+        campus_id = require(r["campus_id"], file, row, "campus_id")
+        if campus_id != expected_campus_id:
+            raise LoadError(file, row, f"campus_id must match folder {expected_campus_id!r}, got {campus_id!r}")
+
+        building_id = r["building_id"] or None
+        if building_id is not None and building_id not in buildings:
+            raise LoadError(file, row, f"unknown building_id {building_id!r}")
+
+        floor = to_int(r["floor"], file, row, "floor")
+        coord_system = check_one_of(r["coord_system"], COORD_SYSTEMS, file, row, "coord_system")
+        x = to_float(r["x_or_lat"], file, row, "x_or_lat")
+        y = to_float(r["y_or_lon"], file, row, "y_or_lon")
+        if coord_system == "latlon":
+            check_latlon(x, y, file, row, "x_or_lat/y_or_lon")
+
+        node_type = require(r["type"], file, row, "type")
+        if node_type == "entrance":
+            if building_id is None:
+                raise LoadError(file, row, "entrance must have a building_id")
+            entrances_by_building.setdefault(building_id, []).append(node_id)
+
+        nodes[node_id] = Node(node_id, campus_id, building_id, floor, coord_system, x, y, node_type)
+    return nodes, entrances_by_building
