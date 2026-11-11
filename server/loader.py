@@ -18,6 +18,8 @@ COORD_SYSTEMS = {"latlon"}  # "local" (indoor x/y) gets added with indoor suppor
 EDGE_COLS = ["from_node", "to_node", "cost", "cost_unit", "edge_type", "accessible"]
 COST_UNITS = {"meters"}  # "seconds" gets added with indoor support
 
+POI_COLS = ["poi_id", "node_id", "name", "category", "building_id", "floor", "accessible", "notes"]
+
 
 @dataclass(frozen=True)
 class Building:
@@ -46,6 +48,18 @@ class Edge:
     cost_unit: str
     edge_type: str | None    # open set; None if not given
     accessible: bool | None  # None = unknown
+
+
+@dataclass(frozen=True)
+class POI:
+    id: str
+    node_id: str             # where routing goes; not part of the graph itself
+    name: str
+    category: str | None     # open set
+    building_id: str | None
+    floor: int | None        # the place's floor; may differ from its node's (e.g. a room reached via an entrance)
+    accessible: bool | None  # the place itself (e.g. an accessible restroom), separate from edges
+    notes: str | None
 
 
 class LoadError(Exception):
@@ -254,3 +268,37 @@ def load_edges(campus_dir, nodes):
 
         add_undirected(adjacency, Edge(from_node, to_node, cost, cost_unit, edge_type, accessible))
     return adjacency
+
+
+# --- POIs ---
+
+def load_pois(campus_dir, nodes, buildings):
+    """Return POIs by id. Several POIs may share a node, and names needn't be unique."""
+    file = "pois.csv"
+    pois = {}
+    for row, r in read_rows(Path(campus_dir) / file, POI_COLS):
+        poi_id = require(r["poi_id"], file, row, "poi_id")
+        if poi_id in pois:
+            raise LoadError(file, row, f"duplicate poi_id {poi_id!r}")
+
+        node_id = require(r["node_id"], file, row, "node_id")
+        if node_id not in nodes:
+            raise LoadError(file, row, f"unknown node_id {node_id!r}")
+        name = require(r["name"], file, row, "name")
+
+        building_id = r["building_id"] or None
+        if building_id is not None:
+            if building_id not in buildings:
+                raise LoadError(file, row, f"unknown building_id {building_id!r}")
+            # Only checked when both have one: outdoor nodes may carry building POIs.
+            node_building = nodes[node_id].building_id
+            if node_building is not None and node_building != building_id:
+                raise LoadError(file, row, f"building_id {building_id!r} doesn't match node "
+                                           f"{node_id!r}'s building {node_building!r}")
+
+        floor = to_int(r["floor"], file, row, "floor") if r["floor"] else None
+        accessible = to_bool_or_none(r["accessible"], file, row, "accessible")
+
+        pois[poi_id] = POI(poi_id, node_id, name, r["category"] or None, building_id,
+                           floor, accessible, r["notes"] or None)
+    return pois

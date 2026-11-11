@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from loader import (
-    BUILDING_COLS, LoadError, check_latlon, check_one_of, load_buildings, load_edges, load_nodes, read_rows,
+    BUILDING_COLS, LoadError, check_latlon, check_one_of, load_buildings, load_edges, load_nodes, load_pois, read_rows,
     require, to_bool_or_none, to_float, to_int,
 )
 
@@ -350,3 +350,68 @@ def test_load_edges_real_northeastern():
     nodes, _ = load_nodes(campus_dir, load_buildings(campus_dir))
     adjacency = load_edges(campus_dir, nodes)
     assert sum(len(v) for v in adjacency.values()) == 2 * 2727
+
+
+# --- load_pois ---
+# pois.csv fixture lines: 2 poi_eA1 (node eA1, bA), 3 poi_eA2 (node eA2, bA)
+
+def load_fixture_pois(campus_dir):
+    buildings = load_buildings(campus_dir)
+    nodes, _ = load_nodes(campus_dir, buildings)
+    return load_pois(campus_dir, nodes, buildings)
+
+
+def test_load_pois_fixture(tiny_campus):
+    pois = load_fixture_pois(tiny_campus)
+    assert set(pois) == {"poi_eA1", "poi_eA2"}
+    poi = pois["poi_eA1"]
+    assert poi.node_id == "eA1" and poi.building_id == "bA"
+    assert poi.floor == 0 and poi.accessible is True
+    assert poi.category == "entrance" and poi.notes is None
+
+
+@pytest.mark.parametrize("col", ["category", "building_id", "floor", "accessible", "notes"])
+def test_load_pois_optional_fields_empty_become_none(broken_campus, col):
+    pois = load_fixture_pois(broken_campus("pois.csv", set_cell(2, col, "")))
+    assert getattr(pois["poi_eA1"], col) is None
+
+
+@pytest.mark.parametrize("line, col, value, attr, expected", [
+    (3, "node_id", "eA1", "node_id", "eA1"),             # two POIs on one node
+    (3, "name", "Building A (South Entrance)", "name", "Building A (South Entrance)"),  # duplicate name
+    (2, "floor", "-1", "floor", -1),
+    (2, "floor", "3", "floor", 3),                      # floor not checked against node's
+    (2, "category", "restroom", "category", "restroom"),  # open category
+])
+def test_load_pois_accepts(broken_campus, line, col, value, attr, expected):
+    pois = load_fixture_pois(broken_campus("pois.csv", set_cell(line, col, value)))
+    poi_id = "poi_eA1" if line == 2 else "poi_eA2"
+    assert getattr(pois[poi_id], attr) == expected
+
+
+def test_load_pois_building_poi_on_outdoor_node(broken_campus):
+    # e.g. a room labelled on a waypoint: the node has no building, so no mismatch
+    campus_dir = broken_campus("pois.csv", set_cell(2, "node_id", "w1"))
+    assert load_fixture_pois(campus_dir)["poi_eA1"].building_id == "bA"
+
+
+@pytest.mark.parametrize("line, col, value, message", [
+    (2, "poi_id", "", "poi_id is required"),
+    (3, "poi_id", "poi_eA1", "duplicate poi_id 'poi_eA1'"),
+    (2, "node_id", "", "node_id is required"),
+    (2, "node_id", "zz", "unknown node_id 'zz'"),
+    (2, "name", "", "name is required"),
+    (2, "building_id", "bZ", "unknown building_id 'bZ'"),
+    (2, "building_id", "bB", "building_id 'bB' doesn't match node 'eA1''s building 'bA'"),
+    (2, "floor", "1.5", "floor must be an integer"),
+    (2, "accessible", "yes", "accessible must be True, False, or empty"),
+])
+def test_load_pois_rejects(broken_campus, line, col, value, message):
+    campus_dir = broken_campus("pois.csv", set_cell(line, col, value))
+    with pytest.raises(LoadError, match=f"pois.csv:{line}: {message}"):
+        load_fixture_pois(campus_dir)
+
+
+def test_load_pois_real_northeastern():
+    pois = load_fixture_pois(REAL_DATA / "northeastern-boston")
+    assert len(pois) == 82
