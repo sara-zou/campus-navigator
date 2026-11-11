@@ -18,8 +18,9 @@ length scaled by the fraction between consecutive points -- not a
 straight-line approximation. Connector edges (entrance -> split point) are
 straight-line (haversine), since that distance is always short.
 
-Idempotent on nodes.csv (skips split points already present, same pattern
-as transform_sidewalks.py). edges.csv is fully regenerated each run.
+Idempotent: split-point rows in nodes.csv are replaced each run (they move
+if an entrance snaps to a different edge); all other nodes.csv rows are left
+alone. edges.csv is fully regenerated each run.
 """
 
 import csv
@@ -31,7 +32,7 @@ import networkx as nx
 import osmnx as ox
 from shapely.geometry import LineString, Point
 
-from osm_graph import CAMPUS_ID, load_filtered_graph, waypoint_id
+from osm_graph import CAMPUS_ID, drop_exact_duplicate_rows, load_filtered_graph, waypoint_id
 
 NODES_CSV = Path(__file__).parent.parent.parent.parent / "data" / CAMPUS_ID / "nodes.csv"
 EDGES_CSV = Path(__file__).parent.parent.parent.parent / "data" / CAMPUS_ID / "edges.csv"
@@ -50,13 +51,15 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
 
 
 def build_kept_subgraph(G, kept_edges) -> nx.MultiDiGraph:
+    # Each edge carries its kept_edges key, so a nearest-edge hit maps back
+    # to exactly one kept edge even when parallel edges share a node pair.
     H = nx.MultiDiGraph(**G.graph)
-    for u, v, data, tags in kept_edges.values():
+    for edge_key, (u, v, data, tags) in kept_edges.items():
         if u not in H:
             H.add_node(u, **G.nodes[u])
         if v not in H:
             H.add_node(v, **G.nodes[v])
-        H.add_edge(u, v, **data)
+        H.add_edge(u, v, **data, kept_key=edge_key)
     return H
 
 
@@ -82,7 +85,7 @@ def main():
 
     # Group entrances by which edge they landed on, so an edge with
     # multiple nearby entrances gets split once, in position order.
-    groups = defaultdict(list)  # {frozenset({u, v}): [(frac, entrance, split_lat, split_lon, connector_m)]}
+    groups = defaultdict(list)  # {kept_edges key: [(frac, entrance, split_lat, split_lon, connector_m)]}
     for entrance, (u, v, key) in zip(entrances, nearest):
         line = edge_geometry(H, u, v, key)
         point = Point(float(entrance["y_or_lon"]), float(entrance["x_or_lat"]))
@@ -90,7 +93,7 @@ def main():
         split_point = line.interpolate(frac, normalized=True)
         split_lon, split_lat = split_point.x, split_point.y
         connector_m = haversine_m(float(entrance["x_or_lat"]), float(entrance["y_or_lon"]), split_lat, split_lon)
-        groups[frozenset((u, v))].append((frac, entrance, split_lat, split_lon, connector_m))
+        groups[H[u][v][key]["kept_key"]].append((frac, entrance, split_lat, split_lon, connector_m))
 
     print(f"{len(entrances)} entrances land on {len(groups)} distinct edges")
 
@@ -152,23 +155,25 @@ def main():
                 "accessible": accessible,
             })
 
-    # --- nodes.csv: append new split-point rows (idempotent) ---
-    if NODES_CSV.exists():
-        with open(NODES_CSV, newline="") as f:
-            already_present = {row["node_id"] for row in csv.DictReader(f) if row["node_id"].startswith("waypoint_")}
-    else:
-        already_present = set()
+    # --- nodes.csv: replace all split-point rows (idempotent) ---
+    # Split points are derived from the current edges, so a rerun must
+    # replace them, not skip them: if an entrance now snaps to a different
+    # edge, its split point moves. Other rows are kept as-is.
+    with open(NODES_CSV, newline="") as f:
+        all_rows = list(csv.DictReader(f))
+    kept_rows = [row for row in all_rows if not row["node_id"].startswith("waypoint_split_")]
+    removed = len(all_rows) - len(kept_rows)
 
-    rows_to_append = [r for r in new_node_rows if r["node_id"] not in already_present]
-    with open(NODES_CSV, "a", newline="") as f:
+    with open(NODES_CSV, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=NODES_FIELDNAMES)
-        for row in rows_to_append:
-            writer.writerow(row)
+        writer.writeheader()
+        writer.writerows(kept_rows)
+        writer.writerows(new_node_rows)
 
-    print(f"Appended {len(rows_to_append)} new split-point rows to {NODES_CSV}")
-    print(f"Skipped {len(new_node_rows) - len(rows_to_append)} split points already present")
+    print(f"Replaced {removed} old split-point rows with {len(new_node_rows)} in {NODES_CSV}")
 
     # --- edges.csv: fully regenerated each run ---
+    edge_rows = drop_exact_duplicate_rows(edge_rows)
     with open(EDGES_CSV, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=EDGES_FIELDNAMES)
         writer.writeheader()

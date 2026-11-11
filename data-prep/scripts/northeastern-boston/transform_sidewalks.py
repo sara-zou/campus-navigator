@@ -12,7 +12,7 @@ fully regenerated each run.
 import csv
 from pathlib import Path
 
-from osm_graph import CAMPUS_ID, load_filtered_graph, waypoint_id
+from osm_graph import CAMPUS_ID, drop_exact_duplicate_rows, load_filtered_graph, waypoint_id
 
 NODES_CSV = Path(__file__).parent.parent.parent.parent / "data" / CAMPUS_ID / "nodes.csv"
 EDGES_CSV = Path(__file__).parent.parent.parent.parent / "data" / CAMPUS_ID / "edges.csv"
@@ -72,6 +72,7 @@ def main():
             "accessible": accessible,
         })
 
+    edge_rows = drop_exact_duplicate_rows(edge_rows)
     with open(EDGES_CSV, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=EDGES_FIELDNAMES)
         writer.writeheader()
