@@ -6,8 +6,15 @@ LoadError naming the file and row; a campus is only built once all its files pas
 import csv
 import json
 import math
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
+
+CAMPUS_ID_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")  # becomes /campuses/{id} in the API
+SWAP_CHECK_M = 50_000     # building points must be this close to the nodes' bbox
+ENTRANCE_MAX_M = 100      # entrances must be this close to their building's bbox
 
 BUILDING_COLS = ["building_id", "name", "polygon_geojson"]
 GEOMETRY_TYPES = {"Polygon", "MultiPolygon"}
@@ -60,6 +67,23 @@ class POI:
     floor: int | None        # the place's floor; may differ from its node's (e.g. a room reached via an entrance)
     accessible: bool | None  # the place itself (e.g. an accessible restroom), separate from edges
     notes: str | None
+
+
+@dataclass(frozen=True)
+class Campus:
+    """One fully validated campus. Read-only: mappings are MappingProxyType, sequences are tuples."""
+    id: str
+    buildings: Mapping[str, Building]
+    nodes: Mapping[str, Node]
+    adjacency: Mapping[str, tuple[tuple[str, Edge], ...]]     # node_id -> ((neighbor_id, Edge), ...)
+    entrances_by_building: Mapping[str, tuple[str, ...]]     # only buildings that have entrances
+    pois: Mapping[str, POI]
+
+    def entrances_for(self, building_id):
+        """Entrance node ids for a building; () if it has none. KeyError if the building doesn't exist."""
+        if building_id not in self.buildings:
+            raise KeyError(building_id)
+        return self.entrances_by_building.get(building_id, ())
 
 
 class LoadError(Exception):
@@ -302,3 +326,92 @@ def load_pois(campus_dir, nodes, buildings):
         pois[poi_id] = POI(poi_id, node_id, name, r["category"] or None, building_id,
                            floor, accessible, r["notes"] or None)
     return pois
+
+
+# --- cross-file checks ---
+
+def haversine_m(lat1, lon1, lat2, lon2):
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi, dlmb = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * 6_371_000 * math.asin(math.sqrt(a))
+
+
+def geometry_latlons(geometry):
+    """Every (lat, lon) point in a Polygon or MultiPolygon (GeoJSON stores [lon, lat])."""
+    polygons = [geometry["coordinates"]] if geometry["type"] == "Polygon" else geometry["coordinates"]
+    return [(p[1], p[0]) for polygon in polygons for ring in polygon for p in ring]
+
+
+def bbox(latlons):
+    lats, lons = [p[0] for p in latlons], [p[1] for p in latlons]
+    return min(lats), max(lats), min(lons), max(lons)
+
+
+def distance_to_bbox_m(lat, lon, box):
+    """Straight-line meters from a point to the nearest spot on a bbox (0 if inside)."""
+    min_lat, max_lat, min_lon, max_lon = box
+    return haversine_m(lat, lon, min(max(lat, min_lat), max_lat), min(max(lon, min_lon), max_lon))
+
+
+def check_cross_file(buildings, nodes, entrances_by_building):
+    # Lat/lon swap: a swapped file lands thousands of km away, so a generous
+    # limit catches it without rejecting satellite buildings.
+    node_latlons = [(n.x_or_lat, n.y_or_lon) for n in nodes.values() if n.coord_system == "latlon"]
+    if node_latlons:
+        node_box = bbox(node_latlons)
+        for building in buildings.values():
+            worst = max(distance_to_bbox_m(lat, lon, node_box) for lat, lon in geometry_latlons(building.geometry))
+            if worst > SWAP_CHECK_M:
+                raise LoadError("buildings.csv", None, f"building {building.id!r} is {worst / 1000:,.0f} km from "
+                                                       "the campus's nodes (lat/lon swapped in buildings.csv or nodes.csv?)")
+
+    # Entrance near its building: catches a wrong building_id on an entrance.
+    for building_id, entrance_ids in entrances_by_building.items():
+        building_box = bbox(geometry_latlons(buildings[building_id].geometry))
+        for node_id in entrance_ids:
+            node = nodes[node_id]
+            if node.coord_system != "latlon":
+                continue
+            d = distance_to_bbox_m(node.x_or_lat, node.y_or_lon, building_box)
+            if d > ENTRANCE_MAX_M:
+                raise LoadError("nodes.csv", None, f"entrance {node_id!r} is {d:,.0f} m from its building "
+                                                   f"{building_id!r} (wrong building_id?)")
+
+
+# --- campus ---
+
+def load_campus(campus_dir):
+    """Load and validate one campus folder. Errors are prefixed with the campus folder name."""
+    campus_dir = Path(campus_dir)
+    campus_id = campus_dir.name
+    if not CAMPUS_ID_PATTERN.fullmatch(campus_id):
+        raise LoadError(campus_id, None, "campus folder name must be lowercase letters, digits, and single hyphens")
+    try:
+        buildings = load_buildings(campus_dir)
+        nodes, entrances_by_building = load_nodes(campus_dir, buildings)
+        adjacency = load_edges(campus_dir, nodes)
+        pois = load_pois(campus_dir, nodes, buildings)
+        check_cross_file(buildings, nodes, entrances_by_building)
+    except LoadError as e:
+        raise LoadError(f"{campus_id}/{e.file}", e.row, e.msg) from None
+
+    return Campus(
+        id=campus_id,
+        buildings=MappingProxyType(buildings),
+        nodes=MappingProxyType(nodes),
+        adjacency=MappingProxyType({k: tuple(v) for k, v in adjacency.items()}),
+        entrances_by_building=MappingProxyType({k: tuple(v) for k, v in entrances_by_building.items()}),
+        pois=MappingProxyType(pois),
+    )
+
+
+def load_all(data_root):
+    """Load every campus folder under data_root. The first bad campus raises; nothing is skipped."""
+    data_root = Path(data_root)
+    if not data_root.is_dir():
+        raise LoadError(str(data_root), None, "data folder not found")
+    campus_dirs = sorted(p for p in data_root.iterdir() if p.is_dir() and not p.name.startswith("."))
+    if not campus_dirs:
+        raise LoadError(str(data_root), None, "no campus folders found")
+    return {d.name: load_campus(d) for d in campus_dirs}

@@ -25,6 +25,15 @@ CORRECTIONS = {
     "140-the-fenway": "140",
 }
 
+# Per-entrance fixes, for when an id is a real building code but wrong for
+# this one entrance, so CORRECTIONS (which renames an id everywhere) can't
+# express it. Found by the server loader's entrance-near-building check.
+ENTRANCE_OVERRIDES = {
+    # Source Label "SE" (= Stetson East) on "Snell Engineering Auditorium";
+    # the point sits inside Snell Engineering Center, 289 m from Stetson East.
+    "entrance_ff41500c-c189-48c6-9e53-7bed42cce8af": "sn",
+}
+
 
 def read_csv(path: Path) -> list[dict]:
     with open(path, newline="") as f:
@@ -54,6 +63,13 @@ def main():
         if row["building_id"] in CORRECTIONS:
             row["building_id"] = CORRECTIONS[row["building_id"]]
 
+    for row in nodes:
+        if row["node_id"] in ENTRANCE_OVERRIDES:
+            row["building_id"] = ENTRANCE_OVERRIDES[row["node_id"]]
+    for row in pois:
+        if row["node_id"] in ENTRANCE_OVERRIDES:
+            row["building_id"] = ENTRANCE_OVERRIDES[row["node_id"]]
+
     buildings = [b for b in buildings if b["building_id"] not in CORRECTIONS]
 
     write_csv(nodes_path, ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type"], nodes)
@@ -61,6 +77,7 @@ def main():
     write_csv(buildings_path, ["building_id", "name", "polygon_geojson"], buildings)
 
     print(f"Fixed {len(CORRECTIONS)} building_id mismatches across nodes.csv, pois.csv, buildings.csv")
+    print(f"Applied {len(ENTRANCE_OVERRIDES)} per-entrance building_id overrides")
     print("Re-run merge_buildings.py to confirm zero buildings remain unmatched.")
 
 

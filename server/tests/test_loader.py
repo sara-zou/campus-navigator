@@ -1,10 +1,11 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
 from loader import (
-    BUILDING_COLS, LoadError, check_latlon, check_one_of, load_buildings, load_edges, load_nodes, load_pois, read_rows,
+    BUILDING_COLS, Campus, LoadError, check_latlon, distance_to_bbox_m, load_all, load_campus, check_one_of, load_buildings, load_edges, load_nodes, load_pois, read_rows,
     require, to_bool_or_none, to_float, to_int,
 )
 
@@ -415,3 +416,154 @@ def test_load_pois_rejects(broken_campus, line, col, value, message):
 def test_load_pois_real_northeastern():
     pois = load_fixture_pois(REAL_DATA / "northeastern-boston")
     assert len(pois) == 82
+
+
+# --- load_campus / Campus ---
+
+def test_load_campus_fixture(tiny_campus):
+    campus = load_campus(tiny_campus)
+    assert isinstance(campus, Campus) and campus.id == "tiny-campus"
+    assert (len(campus.buildings), len(campus.nodes), len(campus.pois)) == (2, 7, 2)
+    assert sum(len(v) for v in campus.adjacency.values()) == 12
+    assert campus.entrances_for("bA") == ("eA1", "eA2")
+
+
+def test_entrances_for_building_without_entrances(tiny_campus):
+    assert load_campus(tiny_campus).entrances_for("bB") == ()
+
+
+def test_entrances_for_unknown_building_raises(tiny_campus):
+    with pytest.raises(KeyError):
+        load_campus(tiny_campus).entrances_for("bZ")
+
+
+def test_campus_is_read_only(tiny_campus):
+    campus = load_campus(tiny_campus)
+    with pytest.raises(AttributeError):
+        campus.id = "other"
+    with pytest.raises(TypeError):
+        campus.nodes["new"] = campus.nodes["w1"]
+    with pytest.raises(AttributeError):
+        campus.adjacency["w1"].append(("w2", None))  # tuples have no append
+
+
+def test_load_campus_errors_name_campus_and_file(broken_campus):
+    campus_dir = broken_campus("edges.csv", set_cell(2, "cost", "-1"))
+    with pytest.raises(LoadError, match="tiny-campus/edges.csv:2: cost must be >= 0"):
+        load_campus(campus_dir)
+
+
+@pytest.mark.parametrize("name", ["Bad Name", "UPPER", "under_score", "-leading", "double--hyphen"])
+def test_load_campus_rejects_bad_folder_name(tmp_path, tiny_campus, name):
+    shutil.copytree(tiny_campus, tmp_path / name)
+    with pytest.raises(LoadError, match="campus folder name must be"):
+        load_campus(tmp_path / name)
+
+
+# --- cross-file checks ---
+
+def test_distance_to_bbox_inside_is_zero():
+    assert distance_to_bbox_m(42.0015, -71.0005, (42.001, 42.002, -71.001, -71.0)) == 0
+
+
+def test_distance_to_bbox_outside():
+    # 0.001 deg of latitude is ~111 m
+    assert distance_to_bbox_m(42.003, -71.0005, (42.001, 42.002, -71.001, -71.0)) == pytest.approx(111, abs=1)
+
+
+def shifted_square(dlat):
+    return json.dumps({"type": "Polygon", "coordinates": [[[lon, lat + dlat] for lon, lat in SQUARE]]})
+
+
+def test_swap_check_rejects_swapped_building(broken_campus):
+    swapped = json.dumps({"type": "Polygon", "coordinates": [[[lat, lon] for lon, lat in SQUARE]]})
+    campus_dir = broken_campus("buildings.csv", set_cell(2, "polygon_geojson", swapped))
+    with pytest.raises(LoadError, match=r"tiny-campus/buildings.csv: building 'bA' is [\d,]+ km .*lat/lon swapped"):
+        load_campus(campus_dir)
+
+
+def test_swap_check_rejects_swapped_nodes(broken_campus):
+    def swap_coords(rows):
+        lat, lon = rows[0].index("x_or_lat"), rows[0].index("y_or_lon")
+        for r in rows[1:]:
+            r[lat], r[lon] = r[lon], r[lat]
+        return rows
+    with pytest.raises(LoadError, match="lat/lon swapped"):
+        load_campus(broken_campus("nodes.csv", swap_coords))
+
+
+def test_swap_check_allows_satellite_building(broken_campus):
+    # bB moved ~5 km north, like an off-campus boathouse; it has no entrances
+    campus_dir = broken_campus("buildings.csv", set_cell(3, "polygon_geojson", shifted_square(0.045)))
+    assert "bB" in load_campus(campus_dir).buildings
+
+
+def test_entrance_check_rejects_far_entrance(broken_campus):
+    # eA1 moved to lat 41.9982: ~310 m south of bA's bbox (lat 42.001-42.002)
+    campus_dir = broken_campus("nodes.csv", set_cell(2, "x_or_lat", "41.9982"))
+    with pytest.raises(LoadError, match=r"tiny-campus/nodes.csv: entrance 'eA1' is [\d,]+ m from its building 'bA'"):
+        load_campus(campus_dir)
+
+
+def test_entrance_check_allows_nearby_entrance(broken_campus):
+    # ~50 m south of bA's bbox
+    campus_dir = broken_campus("nodes.csv", set_cell(2, "x_or_lat", "42.00055"))
+    assert load_campus(campus_dir).entrances_for("bA") == ("eA1", "eA2")
+
+
+# --- load_all ---
+
+def copy_campus(src, dest_root, campus_id):
+    """Copy a campus folder under a new id, rewriting nodes.csv's campus_id to match."""
+    dest = dest_root / campus_id
+    shutil.copytree(src, dest)
+    text = (dest / "nodes.csv").read_text().replace(f",{src.name},", f",{campus_id},")
+    (dest / "nodes.csv").write_text(text)
+    return dest
+
+
+def test_load_all_multiple_campuses(tmp_path, tiny_campus):
+    copy_campus(tiny_campus, tmp_path, "tiny-campus")
+    copy_campus(tiny_campus, tmp_path, "second-campus")
+    campuses = load_all(tmp_path)
+    assert list(campuses) == ["second-campus", "tiny-campus"]
+    assert campuses["second-campus"].nodes["w1"].campus_id == "second-campus"
+
+
+def test_load_all_skips_hidden_folders_and_files(tmp_path, tiny_campus):
+    copy_campus(tiny_campus, tmp_path, "tiny-campus")
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / ".DS_Store").write_text("")
+    assert list(load_all(tmp_path)) == ["tiny-campus"]
+
+
+def test_load_all_raises_on_any_bad_campus(broken_campus, tiny_campus):
+    campus_dir = broken_campus("pois.csv", set_cell(2, "node_id", "zz"))
+    copy_campus(tiny_campus, campus_dir.parent, "good-campus")
+    with pytest.raises(LoadError, match="tiny-campus/pois.csv:2: unknown node_id 'zz'"):
+        load_all(campus_dir.parent)
+
+
+def test_load_all_campus_missing_a_file(tmp_path, tiny_campus):
+    copy_campus(tiny_campus, tmp_path, "tiny-campus")
+    (tmp_path / "tiny-campus" / "pois.csv").unlink()
+    with pytest.raises(LoadError, match="tiny-campus/pois.csv: file not found"):
+        load_all(tmp_path)
+
+
+def test_load_all_empty_root_raises(tmp_path):
+    with pytest.raises(LoadError, match="no campus folders found"):
+        load_all(tmp_path)
+
+
+def test_load_all_missing_root_raises(tmp_path):
+    with pytest.raises(LoadError, match="data folder not found"):
+        load_all(tmp_path / "nope")
+
+
+def test_load_all_real_data():
+    campus = load_all(REAL_DATA)["northeastern-boston"]
+    assert (len(campus.buildings), len(campus.nodes), len(campus.pois)) == (104, 2060, 82)
+    assert len(campus.entrances_by_building) == 59
+    assert sum(len(v) for v in campus.adjacency.values()) == 2 * 2727
+    assert campus.nodes["entrance_ff41500c-c189-48c6-9e53-7bed42cce8af"].building_id == "sn"
