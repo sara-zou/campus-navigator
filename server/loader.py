@@ -15,6 +15,9 @@ GEOMETRY_TYPES = {"Polygon", "MultiPolygon"}
 NODE_COLS = ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type"]
 COORD_SYSTEMS = {"latlon"}  # "local" (indoor x/y) gets added with indoor support
 
+EDGE_COLS = ["from_node", "to_node", "cost", "cost_unit", "edge_type", "accessible"]
+COST_UNITS = {"meters"}  # "seconds" gets added with indoor support
+
 
 @dataclass(frozen=True)
 class Building:
@@ -33,6 +36,16 @@ class Node:
     x_or_lat: float
     y_or_lon: float
     type: str                # open set; only "entrance" has special rules
+
+
+@dataclass(frozen=True)
+class Edge:
+    from_node: str
+    to_node: str
+    cost: float
+    cost_unit: str
+    edge_type: str | None    # open set; None if not given
+    accessible: bool | None  # None = unknown
 
 
 class LoadError(Exception):
@@ -200,3 +213,44 @@ def load_nodes(campus_dir, buildings):
 
         nodes[node_id] = Node(node_id, campus_id, building_id, floor, coord_system, x, y, node_type)
     return nodes, entrances_by_building
+
+
+# --- edges ---
+
+def add_undirected(adjacency, edge):
+    """The only place edge direction is decided: every edge is walkable both ways."""
+    adjacency[edge.from_node].append((edge.to_node, edge))
+    adjacency[edge.to_node].append((edge.from_node, edge))
+
+
+def load_edges(campus_dir, nodes):
+    """Return adjacency: node_id -> [(neighbor_id, Edge), ...]. Every node has a key, even with no edges.
+
+    Parallel edges (same pair, different attributes) are allowed; exact duplicates are not.
+    """
+    file = "edges.csv"
+    adjacency = {node_id: [] for node_id in nodes}
+    seen = {}  # exact-duplicate key -> row it first appeared on
+    for row, r in read_rows(Path(campus_dir) / file, EDGE_COLS):
+        from_node = require(r["from_node"], file, row, "from_node")
+        to_node = require(r["to_node"], file, row, "to_node")
+        for col, node_id in (("from_node", from_node), ("to_node", to_node)):
+            if node_id not in nodes:
+                raise LoadError(file, row, f"unknown {col} {node_id!r}")
+        if from_node == to_node:
+            raise LoadError(file, row, f"self-loop on {from_node!r}")
+
+        cost = to_float(r["cost"], file, row, "cost")
+        if cost < 0:
+            raise LoadError(file, row, f"cost must be >= 0, got {cost}")
+        cost_unit = check_one_of(r["cost_unit"], COST_UNITS, file, row, "cost_unit")
+        edge_type = r["edge_type"] or None
+        accessible = to_bool_or_none(r["accessible"], file, row, "accessible")
+
+        dup_key = (frozenset((from_node, to_node)), cost, cost_unit, edge_type, accessible)
+        if dup_key in seen:
+            raise LoadError(file, row, f"exact duplicate of the edge on row {seen[dup_key]}")
+        seen[dup_key] = row
+
+        add_undirected(adjacency, Edge(from_node, to_node, cost, cost_unit, edge_type, accessible))
+    return adjacency

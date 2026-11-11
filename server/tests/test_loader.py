@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from loader import (
-    BUILDING_COLS, LoadError, check_latlon, check_one_of, load_buildings, load_nodes, read_rows,
+    BUILDING_COLS, LoadError, check_latlon, check_one_of, load_buildings, load_edges, load_nodes, read_rows,
     require, to_bool_or_none, to_float, to_int,
 )
 
@@ -262,3 +262,91 @@ def test_load_nodes_real_northeastern():
     assert len(nodes) == 2060
     assert sum(len(ids) for ids in entrances.values()) == 82
     assert len(entrances) == 59
+
+
+# --- load_edges ---
+# edges.csv fixture lines: 2 eA1-w1, 3 w1-w2, 4 w2-w3, 5 w3-eA2, 6 w1-w3 (steps, False), 7 i1-i2
+
+def load_fixture_edges(campus_dir):
+    nodes, _ = load_fixture_nodes(campus_dir)
+    return load_edges(campus_dir, nodes)
+
+
+def append_row(row):
+    return lambda rows: rows + [row]
+
+
+def test_load_edges_fixture(tiny_campus):
+    adjacency = load_fixture_edges(tiny_campus)
+    assert set(adjacency) == {"eA1", "eA2", "w1", "w2", "w3", "i1", "i2"}
+    assert sum(len(v) for v in adjacency.values()) == 12
+    assert [n for n, _ in adjacency["i1"]] == ["i2"]
+    steps = next(e for n, e in adjacency["w1"] if n == "w3")
+    assert steps.accessible is False and steps.edge_type == "steps" and steps.cost == 240.0
+
+
+def test_load_edges_symmetric(tiny_campus):
+    adjacency = load_fixture_edges(tiny_campus)
+    for a, entries in adjacency.items():
+        for b, edge in entries:
+            assert (a, edge) in adjacency[b]
+
+
+def test_load_edges_node_without_edges_has_empty_list(broken_campus):
+    campus_dir = broken_campus("edges.csv", lambda rows: rows[:-1])  # drop i1-i2
+    adjacency = load_fixture_edges(campus_dir)
+    assert adjacency["i1"] == [] and adjacency["i2"] == []
+
+
+@pytest.mark.parametrize("col, value, attr, expected", [
+    ("cost", "0", "cost", 0.0),
+    ("edge_type", "", "edge_type", None),
+    ("edge_type", "boardwalk", "edge_type", "boardwalk"),
+    ("accessible", "", "accessible", None),
+])
+def test_load_edges_accepts(broken_campus, col, value, attr, expected):
+    adjacency = load_fixture_edges(broken_campus("edges.csv", set_cell(2, col, value)))
+    edge = next(e for n, e in adjacency["eA1"] if n == "w1")
+    assert getattr(edge, attr) == expected
+
+
+def test_load_edges_parallel_edges_both_kept(broken_campus):
+    # an accessible ramp beside the steps edge w1-w3
+    campus_dir = broken_campus("edges.csv", append_row(["w3", "w1", "260.0", "meters", "footway", "True"]))
+    adjacency = load_fixture_edges(campus_dir)
+    to_w3 = [e for n, e in adjacency["w1"] if n == "w3"]
+    assert sorted(e.accessible for e in to_w3) == [False, True]
+
+
+@pytest.mark.parametrize("line, col, value, message", [
+    (2, "from_node", "", "from_node is required"),
+    (2, "to_node", "", "to_node is required"),
+    (2, "from_node", "zz", "unknown from_node 'zz'"),
+    (2, "to_node", "zz", "unknown to_node 'zz'"),
+    (2, "to_node", "eA1", "self-loop on 'eA1'"),
+    (2, "cost", "-1", "cost must be >= 0"),
+    (2, "cost", "abc", "cost must be a number"),
+    (2, "cost_unit", "feet", "cost_unit must be one of"),
+    (2, "accessible", "yes", "accessible must be True, False, or empty"),
+])
+def test_load_edges_rejects(broken_campus, line, col, value, message):
+    campus_dir = broken_campus("edges.csv", set_cell(line, col, value))
+    with pytest.raises(LoadError, match=f"edges.csv:{line}: {message}"):
+        load_fixture_edges(campus_dir)
+
+
+@pytest.mark.parametrize("row", [
+    ["w1", "w3", "240.0", "meters", "steps", "False"],   # same direction
+    ["w3", "w1", "240.0", "meters", "steps", "False"],   # reversed
+])
+def test_load_edges_rejects_exact_duplicate(broken_campus, row):
+    campus_dir = broken_campus("edges.csv", append_row(row))
+    with pytest.raises(LoadError, match="edges.csv:8: exact duplicate of the edge on row 6"):
+        load_fixture_edges(campus_dir)
+
+
+def test_load_edges_real_northeastern():
+    campus_dir = REAL_DATA / "northeastern-boston"
+    nodes, _ = load_nodes(campus_dir, load_buildings(campus_dir))
+    adjacency = load_edges(campus_dir, nodes)
+    assert sum(len(v) for v in adjacency.values()) == 2 * 2727
