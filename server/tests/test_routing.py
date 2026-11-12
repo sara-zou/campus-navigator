@@ -1,11 +1,15 @@
+from pathlib import Path as FsPath
+
 import pytest
 
 from loader import Edge, load_campus
-from routing import IMPASSABLE, NoPath, distance, shortest_path, wheelchair
+from routing import IMPASSABLE, NoPath, Path, distance, shortest_path, wheelchair
 
 # tiny-campus graph:  eA1 -44.5- w1 -82.8- w2 -222.4- w3 -93.7- eA2
 #                     plus steps  w1 -240.0- w3  (accessible=False)
 #                     island:     i1 -55.6- i2
+
+REAL_CAMPUS = FsPath(__file__).parents[2] / "data" / "northeastern-boston"
 
 
 def edge(accessible=True, unit="meters", cost=10.0):
@@ -103,3 +107,75 @@ def test_custom_cost_fn_changes_route(campus):
     avoid_steps = lambda e, frm: e.cost * (10 if e.edge_type == "steps" else 1)
     path = shortest_path(campus.adjacency, ["eA1"], ["eA2"], avoid_steps)
     assert path.nodes == ("eA1", "w1", "w2", "w3", "eA2")
+
+
+# --- sets and edge cases ---
+
+def test_multiple_targets_picks_the_nearest(campus):
+    path = shortest_path(campus.adjacency, ["w2"], campus.entrances_for("bA"), distance)
+    assert path.nodes == ("w2", "w1", "eA1")
+    assert path.cost == pytest.approx(82.8 + 44.5)
+
+
+def test_multiple_sources_picks_the_nearest(campus):
+    path = shortest_path(campus.adjacency, ["eA1", "w3"], ["eA2"], distance)
+    assert path.nodes == ("w3", "eA2")
+
+
+def test_building_to_building_uses_both_sets(campus):
+    # from bA's entrances to a set holding w2 and the island: w2 wins, reached from eA1
+    path = shortest_path(campus.adjacency, campus.entrances_for("bA"), ["w2", "i1"], distance)
+    assert path.nodes == ("eA1", "w1", "w2")
+
+
+def test_source_is_target(campus):
+    assert shortest_path(campus.adjacency, ["w1"], ["w1", "eA2"], distance) == Path(("w1",), (), 0.0)
+
+
+def test_building_without_entrances_is_no_path(campus):
+    assert campus.entrances_for("bB") == ()
+    assert shortest_path(campus.adjacency, ["eA1"], campus.entrances_for("bB"), distance) == NoPath()
+
+
+def test_empty_sources_is_no_path(campus):
+    assert shortest_path(campus.adjacency, [], ["eA1"], distance) == NoPath()
+
+
+@pytest.mark.parametrize("sources, targets", [(["nope"], ["eA1"]), (["eA1"], ["nope"])])
+def test_unknown_node_raises(campus, sources, targets):
+    with pytest.raises(KeyError, match="nope"):
+        shortest_path(campus.adjacency, sources, targets, distance)
+
+
+def test_negative_cost_raises(campus):
+    with pytest.raises(ValueError, match="negative"):
+        shortest_path(campus.adjacency, ["eA1"], ["eA2"], lambda e, frm: -1.0)
+
+
+def test_wheelchair_no_path_when_steps_are_the_only_way(broken_campus):
+    # drop the accessible w2-w3 footway: only the steps connect w1 and w3 now
+    campus = load_campus(broken_campus("edges.csv", lambda rows: [r for r in rows if r[:2] != ["w2", "w3"]]))
+    assert shortest_path(campus.adjacency, ["eA1"], ["eA2"], distance).nodes == ("eA1", "w1", "w3", "eA2")
+    assert shortest_path(campus.adjacency, ["eA1"], ["eA2"], wheelchair) == NoPath()
+
+
+def test_wheelchair_treats_unknown_as_blocked(broken_campus):
+    # make the steps edge unknown instead of False: still blocked for wheelchair, still walkable
+    def unknown_steps(rows):
+        for r in rows:
+            if r[:2] == ["w1", "w3"]:
+                r[5] = ""
+        return rows
+    campus = load_campus(broken_campus("edges.csv", unknown_steps))
+    assert "w2" in shortest_path(campus.adjacency, ["eA1"], ["eA2"], wheelchair).nodes
+    assert "w2" not in shortest_path(campus.adjacency, ["eA1"], ["eA2"], distance).nodes
+
+
+# --- real data ---
+
+def test_northeastern_every_building_with_entrances_reachable():
+    campus = load_campus(REAL_CAMPUS)
+    start = campus.entrances_by_building[min(campus.entrances_by_building)][0]
+    for building_id, entrances in campus.entrances_by_building.items():
+        path = shortest_path(campus.adjacency, [start], entrances, distance)
+        assert isinstance(path, Path), building_id

@@ -40,8 +40,14 @@ def shortest_path(adjacency, sources, targets, cost_fn: CostFn):
     Dijkstra: BFS with a min-heap ordered by total cost. Stops at the first
     target popped (its cost is final then), so with targets = a building's
     entrances this also picks the best entrance.
+
+    Empty sources or targets give NoPath(). Unknown node ids raise KeyError and a
+    negative cost raises ValueError: both are caller bugs, not "no route".
     """
-    targets = set(targets)
+    sources, targets = set(sources), set(targets)
+    for node_id in sources | targets:
+        if node_id not in adjacency:
+            raise KeyError(node_id)
     best = {}            # node -> cheapest cost found so far
     prev = {}            # node -> (node we came from, edge we used)
     done = set()         # nodes whose cost is final
@@ -65,6 +71,8 @@ def shortest_path(adjacency, sources, targets, cost_fn: CostFn):
             c = cost_fn(edge, node)
             if c is IMPASSABLE:
                 continue
+            if c < 0:
+                raise ValueError(f"cost function returned negative cost {c} for {edge}")
             new_cost = cost + c
             if new_cost < best.get(neighbor, math.inf):  # relax
                 best[neighbor] = new_cost
