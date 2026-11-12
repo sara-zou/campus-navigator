@@ -227,6 +227,8 @@ def load_nodes(campus_dir, buildings):
         node_id = require(r["node_id"], file, row, "node_id")
         if node_id in nodes:
             raise LoadError(file, row, f"duplicate node_id {node_id!r}")
+        if node_id.startswith("__"):  # reserved for temporary query-time nodes (query.START)
+            raise LoadError(file, row, f"node_id must not start with '__' (reserved), got {node_id!r}")
 
         campus_id = require(r["campus_id"], file, row, "campus_id")
         if campus_id != expected_campus_id:

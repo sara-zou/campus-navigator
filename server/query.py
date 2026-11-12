@@ -2,21 +2,27 @@
 
 Search is a pure lookup over names; it never touches the graph.
 Snapping puts a GPS point onto the nearest edge via a temporary node, layered
-over the campus adjacency without mutating it.
+over the campus adjacency without mutating it. Routing goes GPS point -> a
+building's best entrance, or -> one POI's node.
 """
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from loader import Edge, haversine_m
-from routing import IMPASSABLE
+from routing import IMPASSABLE, NoPath, distance, shortest_path, wheelchair
 
 DEFAULT_SEARCH_LIMIT = 20
 
 SNAP_MAX_M = 200          # GPS points farther than this from any usable edge get TooFar
 ENDPOINT_EPS_M = 0.5      # a projection this close to an existing node just uses that node
-START = "__start__"       # id of the temporary node; can't collide with a CSV node id in practice
+START = "__start__"       # id of the temporary node; the loader rejects node ids starting with "__"
 EARTH_R_M = 6_371_000
+
+MODES = {  # mode name -> (cost function, travel speed in m/s); wheelchair speed is a placeholder
+    "walk": (distance, 1.4),
+    "wheelchair": (wheelchair, 1.1),
+}
 
 # Rank tiers, best first. Lower number = earlier in results.
 EXACT, PREFIX, WORD_PREFIX, SUBSTRING, ID_EXACT = range(5)
@@ -197,3 +203,80 @@ class _Overlay(Mapping):
 
     def __len__(self):
         return len(self._base) + sum(k not in self._base for k in self._extra)
+
+
+# --- routes ---
+
+@dataclass(frozen=True)
+class Route:
+    coords: tuple[tuple[float, float], ...]  # (lat, lon) polyline: the snapped point, then each node
+    distance_m: float          # along the graph: sum of the edges taken, in meters
+    approach_m: float          # GPS point -> snapped point, off the graph (not in coords)
+    duration_s: float          # (approach_m + distance_m) / the mode's speed
+    entrance_id: str           # node reached
+    entrance_name: str | None  # name of a POI on that node (first by poi_id), if any
+    building_id: str | None    # the reached node's building
+    nodes: tuple[str, ...]     # node ids, parallel to coords; may start with START (not in campus.nodes)
+    edges: tuple[Edge, ...]    # edge taken between each pair (len(nodes) - 1); START's is a half-edge
+
+
+@dataclass(frozen=True)
+class NoRoute:
+    reason: str                       # "too_far" | "no_entrances" | "no_path"
+    distance_m: float | None = None   # too_far only: GPS point -> nearest usable edge
+
+
+def route(campus, lat, lon, *, to_building=None, to_poi=None, mode="walk"):
+    """Route from a GPS point to a building (its best entrance) or a POI, as Route or NoRoute.
+
+    Exactly one of to_building / to_poi. Caller bugs raise: both or neither given or
+    unknown mode -> ValueError, unknown building or POI -> KeyError, bad lat/lon -> ValueError.
+    """
+    if (to_building is None) == (to_poi is None):
+        raise ValueError("give exactly one of to_building, to_poi")
+    if mode not in MODES:
+        raise ValueError(f"unknown mode {mode!r}; expected one of {sorted(MODES)}")
+    cost_fn, speed = MODES[mode]
+
+    if to_building is not None:
+        targets = campus.entrances_for(to_building)
+        if not targets:
+            return NoRoute("no_entrances")
+    else:
+        targets = (campus.pois[to_poi].node_id,)
+
+    s = snap(campus, lat, lon, cost_fn)
+    if isinstance(s, TooFar):
+        return NoRoute("too_far", s.distance_m)
+
+    path = shortest_path(s.adjacency, {s.node_id}, targets, cost_fn)
+    if isinstance(path, NoPath):
+        return NoRoute("no_path")
+
+    coords = ((s.lat, s.lon),) + tuple(
+        (campus.nodes[n].x_or_lat, campus.nodes[n].y_or_lon) for n in path.nodes[1:])
+    meters = sum(_edge_meters(e) for e in path.edges)
+    end = campus.nodes[path.nodes[-1]]
+    return Route(
+        coords=coords,
+        distance_m=meters,
+        approach_m=s.distance_m,
+        duration_s=(s.distance_m + meters) / speed,
+        entrance_id=end.id,
+        entrance_name=_poi_name_at(campus, end.id),
+        building_id=end.building_id,
+        nodes=path.nodes,
+        edges=path.edges,
+    )
+
+
+def _edge_meters(edge):
+    """Real length, independent of the cost function (which may add penalties that aren't meters)."""
+    if edge.cost_unit != "meters":
+        raise ValueError(f"route distance expects meters, got {edge.cost_unit!r}")
+    return edge.cost
+
+
+def _poi_name_at(campus, node_id):
+    names = [p for p in campus.pois.values() if p.node_id == node_id]
+    return min(names, key=lambda p: p.id).name if names else None

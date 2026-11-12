@@ -240,6 +240,7 @@ def test_load_nodes_non_entrance_type_is_not_indexed(broken_campus):
 @pytest.mark.parametrize("line, col, value, message", [
     (2, "node_id", "", "node_id is required"),
     (3, "node_id", "eA1", "duplicate node_id 'eA1'"),
+    (4, "node_id", "__start__", "node_id must not start with '__'"),
     (2, "campus_id", "", "campus_id is required"),
     (2, "campus_id", "other-campus", "campus_id must match folder 'tiny-campus', got 'other-campus'"),
     (2, "building_id", "bZ", "unknown building_id 'bZ'"),

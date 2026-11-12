@@ -1,11 +1,14 @@
 import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from loader import POI, Building, load_campus
-from query import START, SearchResult, Snap, TooFar, search, snap
+from query import START, NoRoute, Route, SearchResult, Snap, TooFar, route, search, snap
 from routing import IMPASSABLE, NoPath, distance, shortest_path, wheelchair
+
+REAL_CAMPUS = Path(__file__).parents[2] / "data" / "northeastern-boston"
 
 # tiny-campus nodes (lat, lon):
 #   w1 (42.0005, -71.0005)  w2 (42.0005, -71.0015)  w3 (42.0025, -71.0015)
@@ -212,3 +215,88 @@ def test_island_snap_then_no_path(campus):
 def test_invalid_coordinates_raise(campus, lat, lon):
     with pytest.raises(ValueError):
         snap(campus, lat, lon)
+
+
+# --- routes ---
+
+MID_W2_W3 = (42.0015, -71.0017)  # ~16.5 m west of the middle of w2-w3
+AT_W3 = (42.0025, -71.0015)
+
+
+def test_route_to_building_picks_nearer_entrance(campus):
+    r = route(campus, *MID_W2_W3, to_building="bA")
+    assert r.entrance_id == "eA2"
+    assert r.entrance_name == "Building A (North Entrance)"
+    assert r.building_id == "bA"
+    assert r.distance_m == pytest.approx(111.2 + 93.7, abs=0.1)
+    assert r.approach_m == pytest.approx(16.5, abs=0.2)
+    assert r.duration_s == pytest.approx((r.approach_m + r.distance_m) / 1.4)
+
+
+def test_polyline_starts_at_snapped_point(campus):
+    r = route(campus, *MID_W2_W3, to_building="bA")
+    assert r.coords[0] == pytest.approx((42.0015, -71.0015))
+    assert r.coords[1:] == ((42.0025, -71.0015), (42.0021, -71.0005))  # w3, eA2
+    assert r.nodes == (START, "w3", "eA2")
+    assert len(r.edges) == len(r.nodes) - 1
+    assert r.edges[0].cost == pytest.approx(111.2, abs=0.1)  # half of w2-w3
+    assert [e.edge_type for e in r.edges] == ["footway", "connector"]
+
+
+def test_route_edges_show_steps_on_walking_route(campus):
+    walk = route(campus, *AT_W3, to_poi="poi_eA1")
+    assert walk.nodes == ("w3", "w1", "eA1")  # snapped onto w3 itself, so no START
+    assert walk.edges[0].edge_type == "steps" and walk.edges[0].accessible is False
+
+
+def test_route_to_poi_goes_to_that_entrance(campus):
+    r = route(campus, *MID_W2_W3, to_poi="poi_eA1")  # the farther entrance
+    assert r.entrance_id == "eA1"
+    assert r.distance_m == pytest.approx(111.2 + 82.8 + 44.5, abs=0.1)
+
+
+def test_wheelchair_avoids_steps_and_is_slower(campus):
+    walk = route(campus, *AT_W3, to_poi="poi_eA1")
+    wc = route(campus, *AT_W3, to_poi="poi_eA1", mode="wheelchair")
+    assert walk.distance_m == pytest.approx(240.0 + 44.5)              # w3 -steps- w1 - eA1
+    assert wc.distance_m == pytest.approx(222.4 + 82.8 + 44.5)         # w3 - w2 - w1 - eA1
+    assert wc.duration_s == pytest.approx(wc.distance_m / 1.1)
+
+
+def test_start_on_entrance_is_zero_length(campus):
+    r = route(campus, 42.0009, -71.0005, to_building="bA")  # exactly eA1
+    assert r.coords == ((42.0009, -71.0005),)
+    assert r.distance_m == 0 and r.duration_s == 0
+    assert r.entrance_id == "eA1"
+
+
+def test_route_no_entrances(campus):
+    assert route(campus, *MID_W2_W3, to_building="bB") == NoRoute("no_entrances")
+
+
+def test_route_too_far(campus):
+    r = route(campus, 42.0100, -71.0005, to_building="bA")
+    assert r.reason == "too_far" and r.distance_m > 200
+
+
+def test_no_path_from_island(campus):
+    assert route(campus, 42.00525, -71.0051, to_building="bA") == NoRoute("no_path")
+
+
+@pytest.mark.parametrize("kwargs, err", [
+    ({}, ValueError),
+    ({"to_building": "bA", "to_poi": "poi_eA1"}, ValueError),
+    ({"to_building": "bA", "mode": "bike"}, ValueError),
+    ({"to_building": "nope"}, KeyError),
+    ({"to_poi": "nope"}, KeyError),
+])
+def test_caller_bugs_raise(campus, kwargs, err):
+    with pytest.raises(err):
+        route(campus, *MID_W2_W3, **kwargs)
+
+
+def test_route_on_real_campus():
+    campus = load_campus(REAL_CAMPUS)
+    for mode in ("walk", "wheelchair"):
+        r = route(campus, 42.3398, -71.0892, to_building="ry", mode=mode)
+        assert isinstance(r, Route) and r.building_id == "ry"
