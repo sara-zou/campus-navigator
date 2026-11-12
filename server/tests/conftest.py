@@ -32,3 +32,12 @@ def broken_campus(tmp_path):
             csv.writer(f).writerows(edit(rows))
         return campus_dir
     return make
+
+
+def copy_campus(src, dest_root, campus_id):
+    """Copy a campus folder under a new id, rewriting nodes.csv's campus_id to match."""
+    dest = dest_root / campus_id
+    shutil.copytree(src, dest)
+    text = (dest / "nodes.csv").read_text().replace(f",{src.name},", f",{campus_id},")
+    (dest / "nodes.csv").write_text(text)
+    return dest

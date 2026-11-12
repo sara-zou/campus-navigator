@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import copy_campus
 from loader import (
     BUILDING_COLS, Campus, LoadError, check_latlon, distance_to_bbox_m, load_all, load_campus, check_one_of, load_buildings, load_edges, load_nodes, load_pois, read_rows,
     require, to_bool_or_none, to_float, to_int,
@@ -513,15 +514,6 @@ def test_entrance_check_allows_nearby_entrance(broken_campus):
 
 
 # --- load_all ---
-
-def copy_campus(src, dest_root, campus_id):
-    """Copy a campus folder under a new id, rewriting nodes.csv's campus_id to match."""
-    dest = dest_root / campus_id
-    shutil.copytree(src, dest)
-    text = (dest / "nodes.csv").read_text().replace(f",{src.name},", f",{campus_id},")
-    (dest / "nodes.csv").write_text(text)
-    return dest
-
 
 def test_load_all_multiple_campuses(tmp_path, tiny_campus):
     copy_campus(tiny_campus, tmp_path, "tiny-campus")
