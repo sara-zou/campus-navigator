@@ -2,6 +2,7 @@
 
 Coordinates: everything is (lat, lon) except building geometry, which stays GeoJSON [lon, lat].
 """
+import math
 import os
 from dataclasses import asdict
 from pathlib import Path
@@ -9,7 +10,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Query
 
 from loader import load_all
-from query import DEFAULT_SEARCH_LIMIT, poi_name_at, search
+from query import DEFAULT_SEARCH_LIMIT, MODES, NoRoute, poi_name_at, route, search
 
 DATA_ENV_VAR = "CAMPUS_DATA"
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[1] / "data"
@@ -74,5 +75,40 @@ def create_app(data_root=None):
                       limit: int = Query(DEFAULT_SEARCH_LIMIT, ge=1, le=MAX_SEARCH_LIMIT)):
         """[{kind, id, name, building_id}]: route to a building by id, or to a POI by id."""
         return [asdict(r) for r in search(campuses[campus_id], q, limit)]
+
+    @app.get("/campuses/{campus_id}/route")
+    def route_campus(campus_id: str = Depends(get_campus),
+                     lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180, le=180),
+                     to_building: str | None = None, to_poi: str | None = None, mode: str = "walk"):
+        """GPS point -> a building's best entrance or a POI. "No route" is a normal 200 answer.
+
+        Inputs are checked here rather than by catching route()'s ValueError/KeyError,
+        so anything route() raises after these checks is a bug and surfaces as 500.
+        """
+        campus = campuses[campus_id]
+        if (to_building is None) == (to_poi is None):
+            raise HTTPException(400, "give exactly one of to_building, to_poi")
+        if mode not in MODES:
+            raise HTTPException(400, f"unknown mode {mode!r}; expected one of {sorted(MODES)}")
+        if to_building is not None and to_building not in campus.buildings:
+            raise HTTPException(404, f"unknown building {to_building!r}")
+        if to_poi is not None and to_poi not in campus.pois:
+            raise HTTPException(404, f"unknown poi {to_poi!r}")
+
+        result = route(campus, lat, lon, to_building=to_building, to_poi=to_poi, mode=mode)
+        if isinstance(result, NoRoute):
+            d = result.distance_m  # inf (no usable edge at all) isn't valid JSON, so it becomes null
+            return {"status": "no_route", "reason": result.reason,
+                    "distance_m": d if d is not None and math.isfinite(d) else None}
+        return {
+            "status": "ok",
+            "coords": [list(c) for c in result.coords],  # (lat, lon)
+            "distance_m": result.distance_m,
+            "approach_m": result.approach_m,
+            "duration_s": result.duration_s,
+            "entrance_id": result.entrance_id,
+            "entrance_name": result.entrance_name,
+            "building_id": result.building_id,
+        }
 
     return app

@@ -165,3 +165,99 @@ def test_search_limit(data_root):
 @pytest.mark.parametrize("limit", ["0", "-1", "101", "abc"])
 def test_search_bad_limit_422(data_root, limit):
     assert get(data_root, f"/campuses/tiny-campus/search?q=building&limit={limit}").status_code == 422
+
+
+# --- GET /campuses/{id}/route ---
+
+AT_W1 = "lat=42.0005&lon=-71.0005"   # exactly on node w1, so approach_m is 0
+
+
+def route_url(params, campus="tiny-campus"):
+    return f"/campuses/{campus}/route?{params}"
+
+
+def test_route_walk_to_building_picks_best_entrance(data_root):
+    res = get(data_root, route_url(f"{AT_W1}&to_building=bA"))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "ok"
+    assert body["entrance_id"] == "eA1"
+    assert body["entrance_name"] == "Building A (South Entrance)"
+    assert body["building_id"] == "bA"
+    assert body["coords"] == [[42.0005, -71.0005], [42.0009, -71.0005]]
+    assert body["distance_m"] == pytest.approx(44.5)
+    assert body["approach_m"] == pytest.approx(0, abs=1e-6)
+    assert body["duration_s"] == pytest.approx(44.5 / 1.4)
+    assert set(body) == {"status", "coords", "distance_m", "approach_m", "duration_s",
+                         "entrance_id", "entrance_name", "building_id"}
+
+
+def test_route_to_poi_walk_takes_steps_wheelchair_avoids_them(data_root):
+    walk = get(data_root, route_url(f"{AT_W1}&to_poi=poi_eA2")).json()
+    chair = get(data_root, route_url(f"{AT_W1}&to_poi=poi_eA2&mode=wheelchair")).json()
+    assert walk["entrance_id"] == chair["entrance_id"] == "eA2"
+    assert walk["distance_m"] == pytest.approx(240.0 + 93.7)            # w1 -steps- w3 - eA2
+    assert chair["distance_m"] == pytest.approx(82.8 + 222.4 + 93.7)    # w1 - w2 - w3 - eA2
+    assert len(chair["coords"]) == 4
+
+
+def test_route_no_entrances(data_root):
+    body = get(data_root, route_url(f"{AT_W1}&to_building=bB")).json()
+    assert body == {"status": "no_route", "reason": "no_entrances", "distance_m": None}
+
+
+def test_route_too_far(data_root):
+    body = get(data_root, route_url("lat=42.1&lon=-71.0&to_building=bA")).json()
+    assert body["status"] == "no_route" and body["reason"] == "too_far"
+    assert body["distance_m"] > 200
+
+
+def test_route_no_path_from_island(data_root):
+    body = get(data_root, route_url("lat=42.0050&lon=-71.0050&to_building=bA")).json()
+    assert body == {"status": "no_route", "reason": "no_path", "distance_m": None}
+
+
+def test_route_no_usable_edge_gives_null_distance(broken_campus):
+    # every edge inaccessible: wheelchair snapping finds nothing at all -> TooFar(inf) -> null
+    campus_dir = broken_campus("edges.csv", lambda rows: [rows[0]] + [r[:5] + ["False"] for r in rows[1:]])
+    res = get(campus_dir.parent, route_url(f"{AT_W1}&to_building=bA&mode=wheelchair"))
+    assert res.status_code == 200
+    assert res.json() == {"status": "no_route", "reason": "too_far", "distance_m": None}
+
+
+@pytest.mark.parametrize("params, detail", [
+    (f"{AT_W1}&to_building=nope", "unknown building 'nope'"),
+    (f"{AT_W1}&to_building=ba", "unknown building 'ba'"),   # case-sensitive
+    (f"{AT_W1}&to_poi=nope", "unknown poi 'nope'"),
+])
+def test_route_unknown_target_404(data_root, params, detail):
+    res = get(data_root, route_url(params))
+    assert res.status_code == 404
+    assert res.json() == {"detail": detail}
+
+
+def test_route_unknown_campus_404(data_root):
+    assert get(data_root, route_url(f"{AT_W1}&to_building=bA", campus="nope")).status_code == 404
+
+
+@pytest.mark.parametrize("params", [
+    f"{AT_W1}",                                  # neither target
+    f"{AT_W1}&to_building=bA&to_poi=poi_eA1",    # both
+    f"{AT_W1}&to_building=bA&mode=distance",     # "distance" is the cost fn, not a mode
+    f"{AT_W1}&to_building=bA&mode=fly",
+])
+def test_route_bad_request_400(data_root, params):
+    res = get(data_root, route_url(params))
+    assert res.status_code == 400
+    assert "detail" in res.json()
+
+
+@pytest.mark.parametrize("params", [
+    "lon=-71.0005&to_building=bA",           # missing lat
+    "lat=91&lon=-71.0005&to_building=bA",
+    "lat=42&lon=-181&to_building=bA",
+    "lat=42&lon=abc&to_building=bA",
+    "lat=nan&lon=-71.0005&to_building=bA",
+])
+def test_route_bad_coords_422(data_root, params):
+    assert get(data_root, route_url(params)).status_code == 422
