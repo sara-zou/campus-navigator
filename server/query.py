@@ -263,7 +263,7 @@ def route(campus, lat, lon, *, to_building=None, to_poi=None, mode="walk"):
         approach_m=s.distance_m,
         duration_s=(s.distance_m + meters) / speed,
         entrance_id=end.id,
-        entrance_name=_poi_name_at(campus, end.id),
+        entrance_name=poi_name_at(campus, end.id),
         building_id=end.building_id,
         nodes=path.nodes,
         edges=path.edges,
@@ -277,6 +277,7 @@ def _edge_meters(edge):
     return edge.cost
 
 
-def _poi_name_at(campus, node_id):
+def poi_name_at(campus, node_id):
+    """Display name for a node: its first POI by poi_id, or None if it has no POI."""
     names = [p for p in campus.pois.values() if p.node_id == node_id]
     return min(names, key=lambda p: p.id).name if names else None

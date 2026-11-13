@@ -1,3 +1,5 @@
+import csv
+import json
 from pathlib import Path
 
 import pytest
@@ -69,3 +71,57 @@ def test_campuses_multiple_sorted(tmp_path, tiny_campus):
     copy_campus(tiny_campus, tmp_path, "second-campus")
     res = get(tmp_path, "/campuses")
     assert [c["id"] for c in res.json()] == ["second-campus", "tiny-campus"]
+
+
+# --- GET /campuses/{id}/buildings ---
+
+def fixture_geometry(tiny_campus, building_id):
+    with (tiny_campus / "buildings.csv").open(newline="") as f:
+        row = next(r for r in csv.DictReader(f) if r["building_id"] == building_id)
+    return json.loads(row["polygon_geojson"])
+
+
+def test_buildings_unknown_campus_404(data_root):
+    res = get(data_root, "/campuses/nope/buildings")
+    assert res.status_code == 404
+    assert res.json() == {"detail": "unknown campus 'nope'"}
+
+
+def test_buildings_campus_id_is_case_sensitive(data_root):
+    assert get(data_root, "/campuses/Tiny-Campus/buildings").status_code == 404
+
+
+def test_buildings_with_entrances(data_root, tiny_campus):
+    res = get(data_root, "/campuses/tiny-campus/buildings")
+    assert res.status_code == 200
+    by_id = {b["id"]: b for b in res.json()}
+    assert [b["id"] for b in res.json()] == ["bA", "bB"]
+    bA = by_id["bA"]
+    assert bA["name"] == "Building A"
+    assert bA["geometry"] == fixture_geometry(tiny_campus, "bA")
+    assert bA["entrances"] == [
+        {"node_id": "eA1", "name": "Building A (South Entrance)", "lat": 42.0009, "lon": -71.0005},
+        {"node_id": "eA2", "name": "Building A (North Entrance)", "lat": 42.0021, "lon": -71.0005},
+    ]
+
+
+def test_buildings_without_entrances(data_root):
+    bB = next(b for b in get(data_root, "/campuses/tiny-campus/buildings").json() if b["id"] == "bB")
+    assert bB["entrances"] == []
+
+
+def test_buildings_entrance_without_poi_has_null_name(broken_campus):
+    campus_dir = broken_campus("pois.csv", lambda rows: [r for r in rows if r[0] != "poi_eA1"])
+    bA = next(b for b in get(campus_dir.parent, "/campuses/tiny-campus/buildings").json() if b["id"] == "bA")
+    assert {e["node_id"]: e["name"] for e in bA["entrances"]} == {"eA1": None, "eA2": "Building A (North Entrance)"}
+
+
+def test_buildings_per_campus_url(tmp_path, tiny_campus):
+    copy_campus(tiny_campus, tmp_path, "tiny-campus")
+    second = copy_campus(tiny_campus, tmp_path, "second-campus")
+    rows = (second / "buildings.csv").read_text().replace("Building B", "Second B")
+    (second / "buildings.csv").write_text(rows)
+    client = TestClient(create_app(tmp_path))
+    names = lambda cid: {b["id"]: b["name"] for b in client.get(f"/campuses/{cid}/buildings").json()}
+    assert names("tiny-campus")["bB"] == "Building B"
+    assert names("second-campus")["bB"] == "Second B"
