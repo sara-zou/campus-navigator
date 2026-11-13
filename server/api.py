@@ -3,15 +3,17 @@
 Coordinates: everything is (lat, lon) except building geometry, which stays GeoJSON [lon, lat].
 """
 import os
+from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 
 from loader import load_all
-from query import poi_name_at
+from query import DEFAULT_SEARCH_LIMIT, poi_name_at, search
 
 DATA_ENV_VAR = "CAMPUS_DATA"
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[1] / "data"
+MAX_SEARCH_LIMIT = 100
 
 
 def resolve_data_root(data_root=None):
@@ -66,5 +68,11 @@ def create_app(data_root=None):
     @app.get("/campuses/{campus_id}/buildings")
     def list_buildings(campus_id: str = Depends(get_campus)):
         return buildings[campus_id]
+
+    @app.get("/campuses/{campus_id}/search")
+    def search_campus(campus_id: str = Depends(get_campus), q: str = Query(),
+                      limit: int = Query(DEFAULT_SEARCH_LIMIT, ge=1, le=MAX_SEARCH_LIMIT)):
+        """[{kind, id, name, building_id}]: route to a building by id, or to a POI by id."""
+        return [asdict(r) for r in search(campuses[campus_id], q, limit)]
 
     return app

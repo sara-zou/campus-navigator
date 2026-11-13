@@ -27,6 +27,9 @@ MODES = {  # mode name -> (cost function, travel speed in m/s); wheelchair speed
 # Rank tiers, best first. Lower number = earlier in results.
 EXACT, PREFIX, WORD_PREFIX, SUBSTRING, ID_EXACT = range(5)
 KIND_ORDER = {"building": 0, "poi": 1}  # tie-break within a tier
+# POI categories that search reports as their building: a door's name is just another
+# way to find the building, and routing to the building picks its best door anyway.
+FOLD_INTO_BUILDING = frozenset({"entrance"})
 
 
 @dataclass(frozen=True)
@@ -46,27 +49,43 @@ def search(campus, q, limit=DEFAULT_SEARCH_LIMIT):
     Ranking: exact name, name prefix, word prefix, other substring, and last,
     buildings whose id equals q (only if not already matched by name).
     Ties: buildings before POIs, then name, then id.
+
+    POIs in FOLD_INTO_BUILDING (with a building_id) are reported as their building,
+    once, at the best tier among the building's name and those POIs' names. Folding
+    happens before `limit`, so folded POIs never take up result slots.
     """
     needle = _normalize(q)
     if not needle:
         return ()
 
-    ranked = []  # (tier, kind order, name, id, result)
+    ranked = []          # (tier, kind order, name, id, result)
+    building_tier = {}   # building_id -> best tier from its name, its id, or its folded POIs
 
     def add(tier, result):
         ranked.append((tier, KIND_ORDER[result.kind], result.name.casefold(), result.id, result))
+
+    def match_building(building_id, tier):
+        building_tier[building_id] = min(tier, building_tier.get(building_id, tier))
 
     for b in campus.buildings.values():
         tier = _name_tier(b.name, needle)
         if tier is None and b.id.casefold() == needle:
             tier = ID_EXACT
         if tier is not None:
-            add(tier, SearchResult("building", b.id, b.name, b.id))
+            match_building(b.id, tier)
 
     for p in campus.pois.values():
         tier = _name_tier(p.name, needle)
-        if tier is not None:
+        if tier is None:
+            continue
+        if p.category in FOLD_INTO_BUILDING and p.building_id is not None:
+            match_building(p.building_id, tier)
+        else:
             add(tier, SearchResult("poi", p.id, p.name, p.building_id))
+
+    for building_id, tier in building_tier.items():
+        b = campus.buildings[building_id]
+        add(tier, SearchResult("building", b.id, b.name, b.id))
 
     ranked.sort(key=lambda r: r[:4])
     return tuple(r[4] for r in ranked[:limit])

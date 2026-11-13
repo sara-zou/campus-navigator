@@ -24,11 +24,13 @@ def campus(tiny_campus):
 def fake_campus(buildings=(), pois=()):
     """Just the two mappings search reads, for ranking cases the fixture doesn't have.
 
-    buildings: (id, name) pairs. pois: (id, name, building_id) triples.
+    buildings: (id, name) pairs. pois: (id, name, building_id) or (id, name, building_id, category).
     """
+    def poi(i, n, b, category=None):
+        return POI(i, "n", n, category, b, None, None, None)
     return SimpleNamespace(
         buildings={i: Building(i, n, {}) for i, n in buildings},
-        pois={i: POI(i, "n", n, None, b, None, None, None) for i, n, b in pois},
+        pois={p[0]: poi(*p) for p in pois},
     )
 
 
@@ -42,19 +44,19 @@ def test_building_result_shape(campus):
     assert search(campus, "Building B") == (SearchResult("building", "bB", "Building B", "bB"),)
 
 
-def test_poi_result_carries_its_building(campus):
-    (r,) = search(campus, "north entrance")
-    assert r == SearchResult("poi", "poi_eA2", "Building A (North Entrance)", "bA")
+def test_entrance_poi_folds_into_its_building(campus):
+    # the fixture's POIs are category=entrance, so a door name finds the building
+    assert search(campus, "north entrance") == (SearchResult("building", "bA", "Building A", "bA"),)
 
 
 def test_case_insensitive_and_whitespace_normalized(campus):
     assert ids(search(campus, "  bUILDING    a ")) == ids(search(campus, "Building A"))
 
 
-def test_exact_then_prefix_buildings_before_pois(campus):
-    # "Building A" exact; the other three are prefixes: building B first, then POIs by name
-    assert ids(search(campus, "building a")) == ["bA"]  + ["poi_eA2", "poi_eA1"]
-    assert ids(search(campus, "building")) == ["bA", "bB", "poi_eA2", "poi_eA1"]
+def test_exact_then_prefix(campus):
+    # entrance POIs fold into bA, so each building appears once
+    assert ids(search(campus, "building a")) == ["bA"]
+    assert ids(search(campus, "building")) == ["bA", "bB"]
 
 
 @pytest.mark.parametrize("q", ["", "   ", "\t\n"])
@@ -67,7 +69,7 @@ def test_no_match(campus):
 
 
 def test_limit(campus):
-    assert ids(search(campus, "building", limit=2)) == ["bA", "bB"]
+    assert ids(search(campus, "building", limit=1)) == ["bA"]
 
 
 def test_id_match_ranks_after_name_matches(campus):
@@ -118,6 +120,45 @@ def test_building_matched_by_name_and_id_appears_once_at_name_tier():
 def test_duplicate_poi_names_are_separate_results():
     c = fake_campus(pois=[("p2", "Door", "b"), ("p1", "Door", "b")])
     assert ids(search(c, "door")) == ["p1", "p2"]  # same name → ordered by id
+
+
+def test_non_entrance_poi_is_its_own_result_and_carries_its_building():
+    c = fake_campus(buildings=[("b", "Ell Hall")], pois=[("p", "Ell Hall Cafe", "b", "food")])
+    assert search(c, "ell hall") == (SearchResult("building", "b", "Ell Hall", "b"),
+                                     SearchResult("poi", "p", "Ell Hall Cafe", "b"))
+
+
+# --- folding entrance POIs into buildings ---
+
+def test_folded_door_name_finds_building_by_alias():
+    c = fake_campus(buildings=[("isec", "Interdisciplinary Science & Eng")],
+                    pois=[("p1", "ISEC (Accessible Entrance)", "isec", "entrance")])
+    assert search(c, "isec") == (SearchResult("building", "isec", "Interdisciplinary Science & Eng", "isec"),)
+
+
+def test_folded_building_ranks_at_best_tier():
+    # the building's name is only a word-prefix match, but a door name is an exact match
+    c = fake_campus(buildings=[("a", "Old Library Annex"), ("b", "Library Hall")],
+                    pois=[("p1", "Library", "a", "entrance")])
+    assert ids(search(c, "library")) == ["a", "b"]  # exact (via door) beats b's prefix
+
+
+def test_several_doors_give_one_building_result():
+    c = fake_campus(buildings=[("b", "Snell Library")],
+                    pois=[("p1", "Snell Library (Accessible Entrance)", "b", "entrance"),
+                          ("p2", "Snell Library NE (Accessible Entrance)", "b", "entrance")])
+    assert ids(search(c, "snell")) == ["b"]
+
+
+def test_entrance_poi_without_building_stays_a_poi():
+    c = fake_campus(pois=[("p1", "Garage Door", None, "entrance")])
+    assert search(c, "garage") == (SearchResult("poi", "p1", "Garage Door", None),)
+
+
+def test_folded_pois_dont_use_up_limit():
+    doors = [(f"p{i}", f"Alpha Door {i}", "a", "entrance") for i in range(5)]
+    c = fake_campus(buildings=[("a", "Alpha Hall"), ("b", "Alpha Annex")], pois=doors)
+    assert ids(search(c, "alpha", limit=2)) == ["b", "a"]
 
 
 def test_pois_never_match_by_id():

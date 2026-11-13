@@ -125,3 +125,43 @@ def test_buildings_per_campus_url(tmp_path, tiny_campus):
     names = lambda cid: {b["id"]: b["name"] for b in client.get(f"/campuses/{cid}/buildings").json()}
     assert names("tiny-campus")["bB"] == "Building B"
     assert names("second-campus")["bB"] == "Second B"
+
+
+# --- GET /campuses/{id}/search ---
+
+def test_search_unknown_campus_404(data_root):
+    assert get(data_root, "/campuses/nope/search?q=building").status_code == 404
+
+
+def test_search_missing_q_422(data_root):
+    assert get(data_root, "/campuses/tiny-campus/search").status_code == 422
+
+
+@pytest.mark.parametrize("q", ["", "%20%20"])
+def test_search_blank_q_gives_empty_list(data_root, q):
+    res = get(data_root, f"/campuses/tiny-campus/search?q={q}")
+    assert res.status_code == 200
+    assert res.json() == []
+
+
+def test_search_results_pass_through(data_root):
+    res = get(data_root, "/campuses/tiny-campus/search?q=building")
+    assert res.json() == [
+        {"kind": "building", "id": "bA", "name": "Building A", "building_id": "bA"},
+        {"kind": "building", "id": "bB", "name": "Building B", "building_id": "bB"},
+    ]
+
+
+def test_search_door_name_finds_building(data_root):
+    res = get(data_root, "/campuses/tiny-campus/search?q=north%20entrance")
+    assert [r["id"] for r in res.json()] == ["bA"]
+
+
+def test_search_limit(data_root):
+    res = get(data_root, "/campuses/tiny-campus/search?q=building&limit=1")
+    assert [r["id"] for r in res.json()] == ["bA"]
+
+
+@pytest.mark.parametrize("limit", ["0", "-1", "101", "abc"])
+def test_search_bad_limit_422(data_root, limit):
+    assert get(data_root, f"/campuses/tiny-campus/search?q=building&limit={limit}").status_code == 422
