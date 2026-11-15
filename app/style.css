@@ -1,0 +1,21 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  font-family: system-ui, sans-serif;
+}
+
+#map {
+  height: 100%;
+}
+
+#status {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000; /* above Leaflet's panes and controls */
+  padding: 8px 14px;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
