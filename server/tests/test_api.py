@@ -261,3 +261,28 @@ def test_route_bad_request_400(data_root, params):
 ])
 def test_route_bad_coords_422(data_root, params):
     assert get(data_root, route_url(params)).status_code == 422
+
+
+# --- frontend ---
+
+def test_root_serves_frontend(data_root):
+    r = get(data_root, "/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert '<div id="map">' in r.text
+
+
+def test_frontend_assets_served(data_root):
+    r = get(data_root, "/main.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers["content-type"]
+
+
+def test_api_routes_win_over_static_mount(data_root):
+    r = get(data_root, "/campuses")
+    assert r.headers["content-type"] == "application/json"
+    assert [c["id"] for c in r.json()] == ["tiny-campus"]
+
+
+def test_unknown_path_404(data_root):
+    assert get(data_root, "/nope.html").status_code == 404

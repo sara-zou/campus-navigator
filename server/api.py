@@ -8,12 +8,14 @@ from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 
 from loader import load_all
 from query import DEFAULT_SEARCH_LIMIT, MODES, NoRoute, poi_name_at, route, search
 
 DATA_ENV_VAR = "CAMPUS_DATA"
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[1] / "data"
+APP_DIR = Path(__file__).resolve().parents[1] / "app"  # the frontend, served at /
 MAX_SEARCH_LIMIT = 100
 
 
@@ -111,4 +113,6 @@ def create_app(data_root=None):
             "building_id": result.building_id,
         }
 
+    # Mounted last: routes match in order, so /campuses/... is always the API, never a file.
+    app.mount("/", StaticFiles(directory=APP_DIR, html=True), name="app")
     return app
