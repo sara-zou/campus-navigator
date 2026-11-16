@@ -19,3 +19,19 @@ html, body {
   background: #fff;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
+
+.locate-button {
+  min-height: 36px; /* comfortable tap target on phones */
+  padding: 6px 12px;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  background: #fff;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.locate-button:disabled {
+  cursor: progress;
+  color: #6b7280;
+}

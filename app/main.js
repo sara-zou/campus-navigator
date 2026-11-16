@@ -57,12 +57,79 @@ function drawBuildings(buildings) {
   }
 }
 
+// --- start point: set by clicking the map or by "use my location"; the backend can't tell which ---
+
+let start = null; // {lat, lon} or null
+let campusBounds = null; // L.LatLngBounds, set in init() when the campus has bounds
+const START_STYLE = { radius: 8, color: "#fff", weight: 3, fillColor: "#16a34a", fillOpacity: 1 };
+const startMarker = L.circleMarker([0, 0], START_STYLE); // moved, never recreated; added on first use
+
+// The only way to change the start. Step 4 hooks in here to re-run the route.
+function setStart(lat, lon) {
+  start = { lat, lon };
+  startMarker.setLatLng([lat, lon]);
+  if (!map.hasLayer(startMarker)) startMarker.addTo(map);
+  startMarker.bringToFront();
+  showStatus("");
+}
+
+// Clicks on buildings and entrance dots bubble up to the map, so these set the start too.
+map.on("click", (e) => setStart(e.latlng.lat, e.latlng.lng));
+
+const GEO_ERRORS = {
+  1: "Location permission was denied. Click the map to choose a start.",
+  2: "Your location isn't available right now. Click the map to choose a start.",
+  3: "Finding your location timed out. Try again, or click the map.",
+};
+
+const LocateControl = L.Control.extend({
+  options: { position: "topleft" }, // added after the zoom control, so it sits below it
+  onAdd() {
+    const button = L.DomUtil.create("button", "locate-button");
+    button.type = "button";
+    button.textContent = "Use my location";
+    L.DomEvent.disableClickPropagation(button); // the click must not also set the start where the button is
+    L.DomEvent.on(button, "click", () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      button.textContent = "Locating…";
+      const done = () => {
+        button.disabled = false;
+        button.textContent = "Use my location";
+      };
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          done();
+          const { latitude: lat, longitude: lon } = pos.coords;
+          setStart(lat, lon);
+          // Pad ~10% so someone just past the outermost path still counts as on campus.
+          if (!campusBounds || campusBounds.pad(0.1).contains([lat, lon])) {
+            map.panTo([lat, lon]);
+          } else {
+            showStatus("You're outside the campus. Click the map to choose a start.");
+          }
+        },
+        (err) => {
+          done();
+          showStatus(GEO_ERRORS[err.code] ?? `Couldn't get your location: ${err.message}`);
+        },
+        { enableHighAccuracy: true, timeout: 10000 },
+      );
+    });
+    return button;
+  },
+});
+
+// Geolocation only exists in secure contexts (https, or localhost); otherwise there's no button.
+if ("geolocation" in navigator) new LocateControl().addTo(map);
+
 async function init() {
   const campuses = await getJSON("/campuses");
   // Only one campus exists today; a picker comes with the second one.
   const campus = campuses[0];
   campusId = campus.id;
   if (campus.bounds) {
+    campusBounds = L.latLngBounds(campus.bounds);
     map.fitBounds(campus.bounds); // [[south, west], [north, east]] is Leaflet's order already
   } else {
     map.setView([0, 0], 2);
