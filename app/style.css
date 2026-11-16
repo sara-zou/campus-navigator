@@ -10,9 +10,11 @@ html, body {
 
 #status {
   position: absolute;
-  top: 12px;
+  bottom: 28px; /* above the attribution line; the top belongs to the search panel */
   left: 50%;
   transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  box-sizing: border-box;
   z-index: 1000; /* above Leaflet's panes and controls */
   padding: 8px 14px;
   border-radius: 6px;
@@ -34,4 +36,73 @@ html, body {
 .locate-button:disabled {
   cursor: progress;
   color: #6b7280;
+}
+
+#search-panel {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 320px;
+  z-index: 1000;
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+#search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 16px; /* 16px stops iOS from zooming in on focus */
+}
+
+#search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  border-top: 1px solid #e5e7eb;
+}
+
+#search-results button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+#search-results button:hover,
+#search-results button:focus {
+  background: #eff6ff;
+}
+
+#search-results small {
+  color: #6b7280;
+}
+
+#search-results .no-matches {
+  padding: 8px 12px;
+  color: #6b7280;
+}
+
+/* Phones: the panel spans the top, so Leaflet's top-left controls move below it. */
+@media (max-width: 600px) {
+  #search-panel {
+    left: 10px;
+    width: auto;
+  }
+
+  .leaflet-top.leaflet-left {
+    top: 56px;
+  }
 }

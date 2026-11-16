@@ -10,6 +10,12 @@
 </head>
 <body>
   <div id="map"></div>
+  <!-- A sibling of #map, not inside it, so clicks and scrolling here never reach the map. -->
+  <div id="search-panel">
+    <input id="search-input" type="search" placeholder="Search buildings and places"
+           aria-label="Search buildings and places" autocomplete="off">
+    <ul id="search-results" hidden></ul>
+  </div>
   <div id="status" hidden></div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
