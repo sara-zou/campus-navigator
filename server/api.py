@@ -111,6 +111,7 @@ def create_app(data_root=None):
             "entrance_id": result.entrance_id,
             "entrance_name": result.entrance_name,
             "building_id": result.building_id,
+            "flags": [asdict(f) for f in result.flags],  # index i = segment coords[i] -> coords[i + 1]
         }
 
     # Mounted last: routes match in order, so /campuses/... is always the API, never a file.

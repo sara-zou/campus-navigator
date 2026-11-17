@@ -52,3 +52,38 @@ export function describeNoRoute(res, destName, mode = "walk") {
       return `No route found (${res.reason}).`; // a reason this frontend doesn't know yet
   }
 }
+
+// --- flags: route segments not known to be wheelchair-accessible (only walking routes have them) ---
+
+// edge_type is an open set; "steps" is the standard OSM value, sometimes joined with "+" ("steps+footway").
+export function isSteps(flag) {
+  return flag.edge_type !== null && flag.edge_type.split("+").includes("steps");
+}
+
+// Tooltip text for one flagged segment.
+export function flagLabel(flag) {
+  if (isSteps(flag)) return "Steps";
+  return flag.accessible === false ? "Not wheelchair-accessible" : "Accessibility unknown";
+}
+
+// Consecutive segment indexes form one section: [[first, last], ...] in route order.
+export function flagSections(flags) {
+  const indexes = flags.map((f) => f.index).sort((a, b) => a - b);
+  const sections = [];
+  for (const i of indexes) {
+    const last = sections[sections.length - 1];
+    if (last && i === last[1] + 1) last[1] = i;
+    else sections.push([i, i]);
+  }
+  return sections;
+}
+
+// The warning line for the result box, or null for a clean route.
+export function describeFlags(flags) {
+  if (flags.length === 0) return null;
+  const n = flagSections(flags).length;
+  if (flags.every(isSteps)) return n === 1 ? "Includes steps" : `Includes steps (${n} sections)`;
+  return n === 1
+    ? "Includes a section not known to be wheelchair-accessible"
+    : `Includes ${n} sections not known to be wheelchair-accessible`;
+}

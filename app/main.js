@@ -1,7 +1,7 @@
 // Entry point. Leaflet is loaded as a global `L` by index.html.
 // Coordinates: the API gives (lat, lon) everywhere except building geometry (GeoJSON [lon, lat]).
 
-import { describeNoRoute, describeRoute, routeParams } from "./helpers.js";
+import { describeFlags, describeNoRoute, describeRoute, flagLabel, routeParams } from "./helpers.js";
 
 const map = L.map("map");
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -189,13 +189,14 @@ for (const input of modeInputs) {
 const ROUTE_STYLE = { color: "#6d28d9", weight: 6, opacity: 0.9 };
 const APPROACH_STYLE = { color: "#6d28d9", weight: 3, dashArray: "6 8", opacity: 0.9 };
 const ROUTE_ENTRANCE_STYLE = { radius: 9, color: "#6d28d9", weight: 4, fillColor: "#fff", fillOpacity: 1 };
+const FLAG_STYLE = { color: "#ea580c", weight: 6, opacity: 1 }; // drawn over the route line
 const MIN_APPROACH_DRAWN_M = 1;
 
 const routeLayer = L.layerGroup().addTo(map); // everything drawn for the current route
 const routeInfo = document.getElementById("route-info");
 let routeAbort = null; // cancels the in-flight request so an old route is never drawn
 
-function showRouteInfo(title, detail) {
+function showRouteInfo(title, detail, warning) {
   routeInfo.replaceChildren();
   routeInfo.hidden = !title;
   if (!title) return;
@@ -205,6 +206,12 @@ function showRouteInfo(title, detail) {
   if (detail) {
     const div = document.createElement("div");
     div.textContent = detail;
+    routeInfo.append(div);
+  }
+  if (warning) {
+    const div = document.createElement("div");
+    div.className = "route-warning";
+    div.textContent = warning;
     routeInfo.append(div);
   }
 }
@@ -222,6 +229,12 @@ function drawRoute(res) {
   if (res.approach_m > MIN_APPROACH_DRAWN_M) {
     L.polyline([[start.lat, start.lon], res.coords[0]], APPROACH_STYLE).addTo(routeLayer);
   }
+  // Flag i is the segment coords[i] -> coords[i + 1]; only walking routes have any.
+  for (const flag of res.flags) {
+    L.polyline([res.coords[flag.index], res.coords[flag.index + 1]], FLAG_STYLE)
+      .bindTooltip(textEl(flagLabel(flag)), { sticky: true })
+      .addTo(routeLayer);
+  }
   const { title, detail } = describeRoute(res);
   L.circleMarker(res.coords[res.coords.length - 1], ROUTE_ENTRANCE_STYLE)
     .bindTooltip(textEl(title))
@@ -229,7 +242,7 @@ function drawRoute(res) {
   highlightBuilding(res.building_id); // also covers a POI that belongs to a building
   map.fitBounds(line.getBounds().extend([start.lat, start.lon]), { maxZoom: 18, padding: [40, 40] });
   startMarker.bringToFront();
-  showRouteInfo(title, detail);
+  showRouteInfo(title, detail, describeFlags(res.flags));
 }
 
 async function updateRoute() {

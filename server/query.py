@@ -227,6 +227,14 @@ class _Overlay(Mapping):
 # --- routes ---
 
 @dataclass(frozen=True)
+class Flag:
+    """A route segment whose edge isn't known to be wheelchair-accessible (for walking-route warnings)."""
+    index: int                 # segment coords[index] -> coords[index + 1], i.e. Route.edges[index]
+    accessible: bool | None    # False = known not accessible, None = unknown
+    edge_type: str | None      # copied from the edge; the frontend uses it for wording ("steps")
+
+
+@dataclass(frozen=True)
 class Route:
     coords: tuple[tuple[float, float], ...]  # (lat, lon) polyline: the snapped point, then each node
     distance_m: float          # along the graph: sum of the edges taken, in meters
@@ -237,6 +245,7 @@ class Route:
     building_id: str | None    # the reached node's building
     nodes: tuple[str, ...]     # node ids, parallel to coords; may start with START (not in campus.nodes)
     edges: tuple[Edge, ...]    # edge taken between each pair (len(nodes) - 1); START's is a half-edge
+    flags: tuple[Flag, ...]    # segments not known to be accessible, by index; always () for wheelchair
 
 
 @dataclass(frozen=True)
@@ -286,7 +295,17 @@ def route(campus, lat, lon, *, to_building=None, to_poi=None, mode="walk"):
         building_id=end.building_id,
         nodes=path.nodes,
         edges=path.edges,
+        flags=flags_for(path.edges),
     )
+
+
+def flags_for(edges):
+    """One Flag per edge that isn't known to be accessible (False or None), in route order.
+
+    A half-edge from START keeps its edge's accessible/edge_type, so starting partway along
+    steps flags index 0. Consecutive flags are not merged; grouping is a display question.
+    """
+    return tuple(Flag(i, e.accessible, e.edge_type) for i, e in enumerate(edges) if e.accessible is not True)
 
 
 def _edge_meters(edge):

@@ -165,3 +165,11 @@ html, body {
   outline: 2px solid #2563eb;
   outline-offset: 2px;
 }
+
+#route-info .route-warning {
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-left: 3px solid #ea580c;
+  background: #fff7ed;
+  color: #9a3412;
+}

@@ -188,8 +188,9 @@ def test_route_walk_to_building_picks_best_entrance(data_root):
     assert body["distance_m"] == pytest.approx(44.5)
     assert body["approach_m"] == pytest.approx(0, abs=1e-6)
     assert body["duration_s"] == pytest.approx(44.5 / 1.4)
+    assert body["flags"] == []
     assert set(body) == {"status", "coords", "distance_m", "approach_m", "duration_s",
-                         "entrance_id", "entrance_name", "building_id"}
+                         "entrance_id", "entrance_name", "building_id", "flags"}
 
 
 def test_route_to_poi_walk_takes_steps_wheelchair_avoids_them(data_root):
@@ -199,6 +200,8 @@ def test_route_to_poi_walk_takes_steps_wheelchair_avoids_them(data_root):
     assert walk["distance_m"] == pytest.approx(240.0 + 93.7)            # w1 -steps- w3 - eA2
     assert chair["distance_m"] == pytest.approx(82.8 + 222.4 + 93.7)    # w1 - w2 - w3 - eA2
     assert len(chair["coords"]) == 4
+    assert walk["flags"] == [{"index": 0, "accessible": False, "edge_type": "steps"}]
+    assert chair["flags"] == []
 
 
 def test_route_no_entrances(data_root):

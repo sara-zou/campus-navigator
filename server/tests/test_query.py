@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from loader import POI, Building, load_campus
-from query import START, NoRoute, Route, SearchResult, Snap, TooFar, route, search, snap
+from query import START, Flag, NoRoute, Route, SearchResult, Snap, TooFar, route, search, snap
 from routing import IMPASSABLE, NoPath, distance, shortest_path, wheelchair
 
 REAL_CAMPUS = Path(__file__).parents[2] / "data" / "northeastern-boston"
@@ -289,6 +289,36 @@ def test_route_edges_show_steps_on_walking_route(campus):
     assert walk.nodes == ("w3", "w1", "eA1")  # snapped onto w3 itself, so no START
     assert walk.edges[0].edge_type == "steps" and walk.edges[0].accessible is False
 
+
+
+def test_walking_route_over_steps_is_flagged(campus):
+    walk = route(campus, *AT_W3, to_poi="poi_eA1")  # w3 -steps- w1 - eA1
+    assert walk.flags == (Flag(0, False, "steps"),)
+
+
+def test_wheelchair_route_has_no_flags(campus):
+    assert route(campus, *AT_W3, to_poi="poi_eA1", mode="wheelchair").flags == ()
+
+
+def test_accessible_route_has_no_flags(campus):
+    assert route(campus, *MID_W2_W3, to_building="bA").flags == ()
+
+
+def test_unknown_accessibility_is_flagged(broken_campus):
+    def unknown_w3_ea2(rows):
+        assert rows[4][:2] == ["w3", "eA2"]
+        rows[4][5] = ""
+        return rows
+    campus = load_campus(broken_campus("edges.csv", unknown_w3_ea2))
+    r = route(campus, *MID_W2_W3, to_building="bA")
+    assert r.nodes == (START, "w3", "eA2")
+    assert r.flags == (Flag(1, None, "connector"),)
+
+
+def test_start_partway_along_steps_flags_the_half_edge(campus):
+    r = route(campus, 42.0015, -71.0010, to_poi="poi_eA1")  # middle of the w1-w3 steps
+    assert r.nodes == (START, "w1", "eA1")
+    assert r.flags == (Flag(0, False, "steps"),)
 
 def test_route_to_poi_goes_to_that_entrance(campus):
     r = route(campus, *MID_W2_W3, to_poi="poi_eA1")  # the farther entrance

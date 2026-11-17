@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { describeNoRoute, describeRoute, formatDistance, formatDuration, routeParams } from "../helpers.js";
+import {
+  describeFlags, describeNoRoute, describeRoute, flagLabel, flagSections, formatDistance, formatDuration, isSteps,
+  routeParams,
+} from "../helpers.js";
 
 test("formatDistance rounds meters to 10", () => {
   assert.equal(formatDistance(0), "0 m");
@@ -97,4 +100,43 @@ test("describeNoRoute wheelchair no_path says accessible path", () => {
 test("describeNoRoute no_entrances is the same in every mode", () => {
   assert.equal(describeNoRoute({ reason: "no_entrances", distance_m: null }, "Ell Hall", "wheelchair"),
     "Ell Hall has no mapped entrances yet.");
+});
+
+const steps = (index) => ({ index, accessible: false, edge_type: "steps" });
+const slope = (index) => ({ index, accessible: false, edge_type: "footway" });
+const unknown = (index) => ({ index, accessible: null, edge_type: null });
+
+test("isSteps reads OSM steps, including joined types", () => {
+  assert.equal(isSteps(steps(0)), true);
+  assert.equal(isSteps({ index: 0, accessible: false, edge_type: "steps+footway" }), true);
+  assert.equal(isSteps({ index: 0, accessible: false, edge_type: "footsteps" }), false); // whole token only
+  assert.equal(isSteps(unknown(0)), false);
+});
+
+test("flagLabel per kind", () => {
+  assert.equal(flagLabel(steps(0)), "Steps");
+  assert.equal(flagLabel(slope(0)), "Not wheelchair-accessible");
+  assert.equal(flagLabel(unknown(0)), "Accessibility unknown");
+});
+
+test("flagSections groups consecutive indexes", () => {
+  assert.deepEqual(flagSections([]), []);
+  assert.deepEqual(flagSections([steps(3)]), [[3, 3]]);
+  assert.deepEqual(flagSections([steps(3), steps(4)]), [[3, 4]]);
+  assert.deepEqual(flagSections([steps(1), steps(4), steps(5)]), [[1, 1], [4, 5]]);
+});
+
+test("describeFlags is null for a clean route", () => {
+  assert.equal(describeFlags([]), null);
+});
+
+test("describeFlags counts steps sections", () => {
+  assert.equal(describeFlags([steps(2)]), "Includes steps");
+  assert.equal(describeFlags([steps(2), steps(3)]), "Includes steps"); // consecutive = one section
+  assert.equal(describeFlags([steps(0), steps(4)]), "Includes steps (2 sections)");
+});
+
+test("describeFlags uses generic wording unless every flag is steps", () => {
+  assert.equal(describeFlags([steps(0), slope(3)]), "Includes 2 sections not known to be wheelchair-accessible");
+  assert.equal(describeFlags([unknown(1)]), "Includes a section not known to be wheelchair-accessible");
 });
