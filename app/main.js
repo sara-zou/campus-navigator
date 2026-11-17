@@ -108,7 +108,7 @@ let campusBounds = null; // L.LatLngBounds, set in init() when the campus has bo
 const START_STYLE = { radius: 8, color: "#fff", weight: 3, fillColor: "#16a34a", fillOpacity: 1 };
 const startMarker = L.circleMarker([0, 0], START_STYLE); // moved, never recreated; added on first use
 
-// The only way to change the start. Step 4 hooks in here to re-run the route.
+// The only way to change the start; re-runs the route.
 function setStart(lat, lon) {
   start = { lat, lon };
   startMarker.setLatLng([lat, lon]);
@@ -118,8 +118,13 @@ function setStart(lat, lon) {
   updateRoute();
 }
 
-// Clicks on buildings and entrance dots bubble up to the map, so these set the start too.
-map.on("click", (e) => setStart(e.latlng.lat, e.latlng.lng));
+// Clicks on buildings bubble up to the map, so they set the start too. Entrance dots don't (they open
+// their popup instead). A map click also closes the search list: the user has moved on from typing.
+map.on("click", (e) => {
+  cancelSearch(); // a pending debounced search would otherwise reopen the list
+  renderResults(null, null);
+  setStart(e.latlng.lat, e.latlng.lng);
+});
 
 const GEO_ERRORS = {
   1: "Location permission was denied. Click the map to choose a start.",
@@ -168,9 +173,9 @@ const LocateControl = L.Control.extend({
 // Geolocation only exists in secure contexts (https, or localhost); otherwise there's no button.
 if ("geolocation" in navigator) new LocateControl().addTo(map);
 
-// --- destination: picked from search results ---
+// --- destination: picked from search results or a door popup ---
 
-let destination = null; // {kind: "building" | "poi", id, name} or null
+let destination = null; // {kind: "building" | "poi" | "entrance", id, name} or null; an entrance's id is its node_id
 let highlightedId = null; // building id currently highlighted
 
 function highlightBuilding(id) {
@@ -192,8 +197,6 @@ function setDestination(result) {
   }
   updateRoute();
 }
-
-// --- route: re-run whenever the start or the destination changes ---
 
 // --- mode: the radio buttons' values are the backend's MODES keys ---
 
@@ -222,9 +225,16 @@ for (const input of modeInputs) {
     updateRoute();
   });
 }
+
+// --- route: re-run whenever the start, the destination or the mode changes ---
+
 const ROUTE_STYLE = { color: "#6d28d9", weight: 6, opacity: 0.9 };
 const APPROACH_STYLE = { color: "#6d28d9", weight: 3, dashArray: "6 8", opacity: 0.9 };
-const ROUTE_ENTRANCE_STYLE = { radius: 9, color: "#6d28d9", weight: 4, fillColor: "#fff", fillOpacity: 1 };
+// interactive: false lets clicks pass through the ring to the door dot underneath, so the door's popup
+// still opens. Otherwise a tap on the ring would count as a map click and move the start onto the destination.
+const ROUTE_ENTRANCE_STYLE = {
+  radius: 9, color: "#6d28d9", weight: 4, fillColor: "#fff", fillOpacity: 1, interactive: false,
+};
 const FLAG_STYLE = { color: "#ea580c", weight: 6, opacity: 1 }; // drawn over the route line
 const MIN_APPROACH_DRAWN_M = 1;
 
@@ -272,9 +282,8 @@ function drawRoute(res) {
       .addTo(routeLayer);
   }
   const { title, detail } = describeRoute(res);
-  L.circleMarker(res.coords[res.coords.length - 1], ROUTE_ENTRANCE_STYLE)
-    .bindTooltip(textEl(title))
-    .addTo(routeLayer);
+  // No tooltip: a non-interactive layer can't show one; the door dot underneath has the name.
+  L.circleMarker(res.coords[res.coords.length - 1], ROUTE_ENTRANCE_STYLE).addTo(routeLayer);
   highlightBuilding(res.building_id); // also covers a POI that belongs to a building
   map.fitBounds(line.getBounds().extend([start.lat, start.lon]), { maxZoom: 18, padding: [40, 40] });
   startMarker.bringToFront();
