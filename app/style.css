@@ -106,3 +106,13 @@ html, body {
     top: 56px;
   }
 }
+
+#route-info {
+  padding: 10px 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+#route-info div {
+  margin-top: 2px;
+  color: #374151;
+}

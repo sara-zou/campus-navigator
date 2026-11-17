@@ -1,6 +1,8 @@
 // Entry point. Leaflet is loaded as a global `L` by index.html.
 // Coordinates: the API gives (lat, lon) everywhere except building geometry (GeoJSON [lon, lat]).
 
+import { describeNoRoute, describeRoute, routeParams } from "./helpers.js";
+
 const map = L.map("map");
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
@@ -79,6 +81,7 @@ function setStart(lat, lon) {
   if (!map.hasLayer(startMarker)) startMarker.addTo(map);
   startMarker.bringToFront();
   showStatus("");
+  updateRoute();
 }
 
 // Clicks on buildings and entrance dots bubble up to the map, so these set the start too.
@@ -142,13 +145,85 @@ function highlightBuilding(id) {
   if (highlightedId !== null) buildingLayers.get(highlightedId).setStyle(HIGHLIGHT_STYLE);
 }
 
-// The only way to change the destination. Step 4b hooks in here to run the route.
+// The only way to change the destination.
 function setDestination(result) {
   destination = result ? { kind: result.kind, id: result.id, name: result.name } : null;
   // A POI's location isn't known until a route comes back (no endpoint gives POI coordinates).
   highlightBuilding(result?.kind === "building" ? result.id : null);
-  if (highlightedId !== null) {
+  // With a start, the route fits the map once it arrives; zooming here too would jump twice.
+  if (highlightedId !== null && start === null) {
     map.fitBounds(buildingLayers.get(highlightedId).getBounds(), { maxZoom: 18, padding: [40, 40] });
+  }
+  updateRoute();
+}
+
+// --- route: re-run whenever the start or the destination changes ---
+
+const MODE = "walk"; // step 5 replaces this with a walk/wheelchair toggle
+const ROUTE_STYLE = { color: "#6d28d9", weight: 6, opacity: 0.9 };
+const APPROACH_STYLE = { color: "#6d28d9", weight: 3, dashArray: "6 8", opacity: 0.9 };
+const ROUTE_ENTRANCE_STYLE = { radius: 9, color: "#6d28d9", weight: 4, fillColor: "#fff", fillOpacity: 1 };
+const MIN_APPROACH_DRAWN_M = 1;
+
+const routeLayer = L.layerGroup().addTo(map); // everything drawn for the current route
+const routeInfo = document.getElementById("route-info");
+let routeAbort = null; // cancels the in-flight request so an old route is never drawn
+
+function showRouteInfo(title, detail) {
+  routeInfo.replaceChildren();
+  routeInfo.hidden = !title;
+  if (!title) return;
+  const strong = document.createElement("strong");
+  strong.textContent = title;
+  routeInfo.append(strong);
+  if (detail) {
+    const div = document.createElement("div");
+    div.textContent = detail;
+    routeInfo.append(div);
+  }
+}
+
+function clearRoute() {
+  routeAbort?.abort();
+  routeLayer.clearLayers();
+  showRouteInfo(null);
+}
+
+function drawRoute(res) {
+  routeLayer.clearLayers();
+  const line = L.polyline(res.coords, ROUTE_STYLE).addTo(routeLayer); // coords are (lat, lon)
+  // The approach (your point -> where you join the path) is off the graph, so it isn't in coords.
+  if (res.approach_m > MIN_APPROACH_DRAWN_M) {
+    L.polyline([[start.lat, start.lon], res.coords[0]], APPROACH_STYLE).addTo(routeLayer);
+  }
+  const { title, detail } = describeRoute(res);
+  L.circleMarker(res.coords[res.coords.length - 1], ROUTE_ENTRANCE_STYLE)
+    .bindTooltip(textEl(title))
+    .addTo(routeLayer);
+  highlightBuilding(res.building_id); // also covers a POI that belongs to a building
+  map.fitBounds(line.getBounds().extend([start.lat, start.lon]), { maxZoom: 18, padding: [40, 40] });
+  startMarker.bringToFront();
+  showRouteInfo(title, detail);
+}
+
+async function updateRoute() {
+  clearRoute();
+  if (start === null || destination === null || campusId === null) return;
+  const ctrl = new AbortController();
+  routeAbort = ctrl;
+  const dest = destination; // the values this request was made for
+  showRouteInfo("Finding route…");
+  try {
+    const params = routeParams(start, dest, MODE);
+    const res = await getJSON(`/campuses/${encodeURIComponent(campusId)}/route?${params}`, ctrl.signal);
+    if (res.status === "ok") drawRoute(res);
+    else showRouteInfo("No route", describeNoRoute(res, dest.name));
+  } catch (err) {
+    if (err.name === "AbortError") return; // superseded by a newer start or destination
+    showRouteInfo(null);
+    // Inputs come from our own data, so a 400/404 here is a frontend bug, not the user's fault.
+    showStatus(`Routing failed: ${err.message}`);
+    console.error(err);
   }
 }
 
