@@ -32,7 +32,10 @@ function textEl(text) {
 
 const BUILDING_STYLE = { color: "#2563eb", weight: 2, fillOpacity: 0.15 };
 const NO_ENTRANCE_STYLE = { color: "#6b7280", weight: 1, dashArray: "4 4", fillOpacity: 0.08 };
-const ENTRANCE_STYLE = { radius: 5, color: "#fff", weight: 1.5, fillColor: "#dc2626", fillOpacity: 1 };
+// bubblingMouseEvents: false keeps a click on a door from also reaching the map (which would move the start).
+const ENTRANCE_STYLE = {
+  radius: 5, color: "#fff", weight: 1.5, fillColor: "#dc2626", fillOpacity: 1, bubblingMouseEvents: false,
+};
 
 const HIGHLIGHT_STYLE = { weight: 4, fillOpacity: 0.3 };
 
@@ -60,11 +63,42 @@ function drawBuildings(buildings) {
   // Entrances are (lat, lon). Added after the polygons so they sit on top.
   for (const b of buildings) {
     for (const e of b.entrances) {
-      L.circleMarker([e.lat, e.lon], ENTRANCE_STYLE)
+      const marker = L.circleMarker([e.lat, e.lon], ENTRANCE_STYLE)
         .bindTooltip(textEl(e.name ?? "Entrance"))
         .addTo(map);
+      marker.bindPopup(() => entrancePopup(b, e));
     }
   }
+}
+
+// Door popup, built from elements (never an HTML string): name, building, "Route here" / "Start here".
+function entrancePopup(building, entrance) {
+  const label = entrance.name ?? `Entrance of ${building.name}`;
+  const box = document.createElement("div");
+  box.className = "entrance-popup";
+  const title = document.createElement("strong");
+  title.textContent = label;
+  const sub = document.createElement("div");
+  sub.textContent = building.name;
+  const buttons = document.createElement("div");
+  buttons.className = "entrance-popup-buttons";
+  const routeHere = document.createElement("button");
+  routeHere.type = "button";
+  routeHere.textContent = "Route here";
+  routeHere.addEventListener("click", () => {
+    map.closePopup();
+    pick({ kind: "entrance", id: entrance.node_id, name: label, building_id: building.id });
+  });
+  const startHere = document.createElement("button");
+  startHere.type = "button";
+  startHere.textContent = "Start here";
+  startHere.addEventListener("click", () => {
+    map.closePopup();
+    setStart(entrance.lat, entrance.lon); // snaps onto the door node itself
+  });
+  buttons.append(routeHere, startHere);
+  box.append(title, sub, buttons);
+  return box;
 }
 
 // --- start point: set by clicking the map or by "use my location"; the backend can't tell which ---
@@ -146,10 +180,12 @@ function highlightBuilding(id) {
 }
 
 // The only way to change the destination.
+// result: a search result, or {kind: "entrance", id: node_id, name, building_id} from a door popup.
 function setDestination(result) {
   destination = result ? { kind: result.kind, id: result.id, name: result.name } : null;
   // A POI's location isn't known until a route comes back (no endpoint gives POI coordinates).
-  highlightBuilding(result?.kind === "building" ? result.id : null);
+  const highlight = { building: result?.id, entrance: result?.building_id }[result?.kind] ?? null;
+  highlightBuilding(highlight);
   // With a start, the route fits the map once it arrives; zooming here too would jump twice.
   if (highlightedId !== null && start === null) {
     map.fitBounds(buildingLayers.get(highlightedId).getBounds(), { maxZoom: 18, padding: [40, 40] });

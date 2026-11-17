@@ -14,9 +14,12 @@ export function formatDuration(s) {
   return rest === 0 ? `${h} h` : `${h} h ${rest} min`;
 }
 
-// start: {lat, lon}; destination: {kind: "building" | "poi", id}.
+const TARGET_PARAM = { building: "to_building", poi: "to_poi", entrance: "to_entrance" };
+
+// start: {lat, lon}; destination: {kind: "building" | "poi" | "entrance", id}. An entrance's id is its node_id.
 export function routeParams(start, destination, mode) {
-  const target = destination.kind === "building" ? "to_building" : "to_poi";
+  const target = TARGET_PARAM[destination.kind];
+  if (!target) throw new Error(`unknown destination kind ${JSON.stringify(destination.kind)}`); // a frontend bug
   return new URLSearchParams({ lat: start.lat, lon: start.lon, [target]: destination.id, mode });
 }
 

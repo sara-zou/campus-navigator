@@ -173,3 +173,30 @@ html, body {
   background: #fff7ed;
   color: #9a3412;
 }
+
+.entrance-popup div {
+  color: #6b7280;
+}
+
+.entrance-popup-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.entrance-popup-buttons button {
+  flex: 1;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid #6d28d9;
+  border-radius: 4px;
+  background: #fff;
+  color: #6d28d9;
+  font: inherit;
+  cursor: pointer;
+}
+
+.entrance-popup-buttons button:first-child {
+  background: #6d28d9;
+  color: #fff;
+}

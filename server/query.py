@@ -3,7 +3,7 @@
 Search is a pure lookup over names; it never touches the graph.
 Snapping puts a GPS point onto the nearest edge via a temporary node, layered
 over the campus adjacency without mutating it. Routing goes GPS point -> a
-building's best entrance, or -> one POI's node.
+building's best entrance, -> one POI's node, or -> one specific entrance.
 """
 import math
 from collections.abc import Mapping
@@ -254,14 +254,21 @@ class NoRoute:
     distance_m: float | None = None   # too_far only: GPS point -> nearest usable edge
 
 
-def route(campus, lat, lon, *, to_building=None, to_poi=None, mode="walk"):
-    """Route from a GPS point to a building (its best entrance) or a POI, as Route or NoRoute.
+def is_entrance(campus, node_id):
+    """True if node_id is a node of type "entrance" (the only nodes to_entrance accepts)."""
+    node = campus.nodes.get(node_id)
+    return node is not None and node.type == "entrance"
 
-    Exactly one of to_building / to_poi. Caller bugs raise: both or neither given or
-    unknown mode -> ValueError, unknown building or POI -> KeyError, bad lat/lon -> ValueError.
+
+def route(campus, lat, lon, *, to_building=None, to_poi=None, to_entrance=None, mode="walk"):
+    """Route from a GPS point to a building (its best entrance), a POI, or one specific entrance.
+
+    Exactly one of to_building / to_poi / to_entrance (an entrance's node_id). Caller bugs raise:
+    not exactly one target or unknown mode -> ValueError; unknown building or POI, or a
+    to_entrance that isn't an entrance node -> KeyError; bad lat/lon -> ValueError.
     """
-    if (to_building is None) == (to_poi is None):
-        raise ValueError("give exactly one of to_building, to_poi")
+    if sum(t is not None for t in (to_building, to_poi, to_entrance)) != 1:
+        raise ValueError("give exactly one of to_building, to_poi, to_entrance")
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; expected one of {sorted(MODES)}")
     cost_fn, speed = MODES[mode]
@@ -270,8 +277,12 @@ def route(campus, lat, lon, *, to_building=None, to_poi=None, mode="walk"):
         targets = campus.entrances_for(to_building)
         if not targets:
             return NoRoute("no_entrances")
-    else:
+    elif to_poi is not None:
         targets = (campus.pois[to_poi].node_id,)
+    else:
+        if not is_entrance(campus, to_entrance):
+            raise KeyError(f"unknown entrance {to_entrance!r}")
+        targets = (to_entrance,)
 
     s = snap(campus, lat, lon, cost_fn)
     if isinstance(s, TooFar):

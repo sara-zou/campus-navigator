@@ -204,6 +204,16 @@ def test_route_to_poi_walk_takes_steps_wheelchair_avoids_them(data_root):
     assert chair["flags"] == []
 
 
+def test_route_to_entrance(data_root):
+    best = get(data_root, route_url(f"{AT_W1}&to_building=bA")).json()
+    door = get(data_root, route_url(f"{AT_W1}&to_entrance=eA2")).json()
+    assert best["entrance_id"] == "eA1"
+    assert door["status"] == "ok"
+    assert door["entrance_id"] == "eA2"
+    assert door["entrance_name"] == "Building A (North Entrance)"
+    assert door["building_id"] == "bA"
+
+
 def test_route_no_entrances(data_root):
     body = get(data_root, route_url(f"{AT_W1}&to_building=bB")).json()
     assert body == {"status": "no_route", "reason": "no_entrances", "distance_m": None}
@@ -232,6 +242,8 @@ def test_route_no_usable_edge_gives_null_distance(broken_campus):
     (f"{AT_W1}&to_building=nope", "unknown building 'nope'"),
     (f"{AT_W1}&to_building=ba", "unknown building 'ba'"),   # case-sensitive
     (f"{AT_W1}&to_poi=nope", "unknown poi 'nope'"),
+    (f"{AT_W1}&to_entrance=nope", "unknown entrance 'nope'"),
+    (f"{AT_W1}&to_entrance=w1", "unknown entrance 'w1'"),   # a node, but not an entrance
 ])
 def test_route_unknown_target_404(data_root, params, detail):
     res = get(data_root, route_url(params))
@@ -246,6 +258,8 @@ def test_route_unknown_campus_404(data_root):
 @pytest.mark.parametrize("params", [
     f"{AT_W1}",                                  # neither target
     f"{AT_W1}&to_building=bA&to_poi=poi_eA1",    # both
+    f"{AT_W1}&to_building=bA&to_entrance=eA1",
+    f"{AT_W1}&to_building=bA&to_poi=poi_eA1&to_entrance=eA1",
     f"{AT_W1}&to_building=bA&mode=distance",     # "distance" is the cost fn, not a mode
     f"{AT_W1}&to_building=bA&mode=fly",
 ])

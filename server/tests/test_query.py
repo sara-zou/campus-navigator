@@ -354,9 +354,31 @@ def test_no_path_from_island(campus):
     assert route(campus, 42.00525, -71.0051, to_building="bA") == NoRoute("no_path")
 
 
+def test_route_to_entrance_goes_to_that_door(campus):
+    best = route(campus, *MID_W2_W3, to_building="bA")
+    assert best.entrance_id == "eA2"
+    r = route(campus, *MID_W2_W3, to_entrance="eA1")  # the farther door
+    assert r.entrance_id == "eA1"
+    assert r.entrance_name == "Building A (South Entrance)"
+    assert r.building_id == "bA"
+    assert r.distance_m == pytest.approx(111.2 + 82.8 + 44.5, abs=0.1)
+
+
+def test_route_to_entrance_wheelchair_avoids_steps(campus):
+    walk = route(campus, *AT_W3, to_entrance="eA1")
+    wc = route(campus, *AT_W3, to_entrance="eA1", mode="wheelchair")
+    assert walk.nodes == ("w3", "w1", "eA1") and walk.flags
+    assert wc.nodes == ("w3", "w2", "w1", "eA1") and wc.flags == ()
+
+
 @pytest.mark.parametrize("kwargs, err", [
     ({}, ValueError),
     ({"to_building": "bA", "to_poi": "poi_eA1"}, ValueError),
+    ({"to_building": "bA", "to_entrance": "eA1"}, ValueError),
+    ({"to_poi": "poi_eA1", "to_entrance": "eA1"}, ValueError),
+    ({"to_entrance": "w1"}, KeyError),     # a node, but not an entrance
+    ({"to_entrance": "nope"}, KeyError),
+    ({"to_entrance": "EA1"}, KeyError),    # case-sensitive
     ({"to_building": "bA", "mode": "bike"}, ValueError),
     ({"to_building": "nope"}, KeyError),
     ({"to_poi": "nope"}, KeyError),

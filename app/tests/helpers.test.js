@@ -40,6 +40,15 @@ test("routeParams sends to_building for a building", () => {
   assert.equal(p.toString(), "lat=42.3&lon=-71.1&to_building=snl&mode=walk");
 });
 
+test("routeParams sends to_entrance (a node_id) for an entrance", () => {
+  const p = routeParams({ lat: 1, lon: 2 }, { kind: "entrance", id: "entrance_7" }, "walk");
+  assert.equal(p.toString(), "lat=1&lon=2&to_entrance=entrance_7&mode=walk");
+});
+
+test("routeParams throws on an unknown kind", () => {
+  assert.throws(() => routeParams({ lat: 1, lon: 2 }, { kind: "room", id: "x" }, "walk"), /unknown destination kind/);
+});
+
 test("routeParams sends to_poi for a POI, and escapes ids", () => {
   const p = routeParams({ lat: 1, lon: 2 }, { kind: "poi", id: "a b&c" }, "wheelchair");
   assert.equal(p.get("to_poi"), "a b&c");
