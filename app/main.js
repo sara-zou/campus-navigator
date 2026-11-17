@@ -159,7 +159,33 @@ function setDestination(result) {
 
 // --- route: re-run whenever the start or the destination changes ---
 
-const MODE = "walk"; // step 5 replaces this with a walk/wheelchair toggle
+// --- mode: the radio buttons' values are the backend's MODES keys ---
+
+const MODE_STORAGE_KEY = "campus-navigator.mode";
+const modeInputs = [...document.querySelectorAll('#mode-toggle input[name="mode"]')];
+const knownModes = new Set(modeInputs.map((i) => i.value));
+
+// Storage can throw (private browsing, blocked site data); the page then just starts in walk.
+function loadMode() {
+  try {
+    const saved = localStorage.getItem(MODE_STORAGE_KEY);
+    if (knownModes.has(saved)) return saved;
+  } catch {}
+  return "walk";
+}
+
+let mode = loadMode();
+for (const input of modeInputs) {
+  input.checked = input.value === mode;
+  input.addEventListener("change", () => {
+    if (!input.checked) return;
+    mode = input.value;
+    try {
+      localStorage.setItem(MODE_STORAGE_KEY, mode);
+    } catch {}
+    updateRoute();
+  });
+}
 const ROUTE_STYLE = { color: "#6d28d9", weight: 6, opacity: 0.9 };
 const APPROACH_STYLE = { color: "#6d28d9", weight: 3, dashArray: "6 8", opacity: 0.9 };
 const ROUTE_ENTRANCE_STYLE = { radius: 9, color: "#6d28d9", weight: 4, fillColor: "#fff", fillOpacity: 1 };
@@ -212,12 +238,13 @@ async function updateRoute() {
   const ctrl = new AbortController();
   routeAbort = ctrl;
   const dest = destination; // the values this request was made for
+  const reqMode = mode;
   showRouteInfo("Finding route…");
   try {
-    const params = routeParams(start, dest, MODE);
+    const params = routeParams(start, dest, reqMode);
     const res = await getJSON(`/campuses/${encodeURIComponent(campusId)}/route?${params}`, ctrl.signal);
     if (res.status === "ok") drawRoute(res);
-    else showRouteInfo("No route", describeNoRoute(res, dest.name));
+    else showRouteInfo("No route", describeNoRoute(res, dest.name, reqMode));
   } catch (err) {
     if (err.name === "AbortError") return; // superseded by a newer start or destination
     showRouteInfo(null);

@@ -14,6 +14,12 @@
   <div id="search-panel">
     <input id="search-input" type="search" placeholder="Search buildings and places"
            aria-label="Search buildings and places" autocomplete="off">
+    <!-- values must be keys of MODES in server/query.py -->
+    <fieldset id="mode-toggle">
+      <legend>Travel mode</legend>
+      <label><input type="radio" name="mode" value="walk" checked><span>Walk</span></label>
+      <label><input type="radio" name="mode" value="wheelchair"><span>Wheelchair</span></label>
+    </fieldset>
     <ul id="search-results" hidden></ul>
     <div id="route-info" hidden></div>
   </div>

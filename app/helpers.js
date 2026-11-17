@@ -30,16 +30,24 @@ export function describeRoute(res) {
 }
 
 // A "no_route" /route response -> one message per reason.
-export function describeNoRoute(res, destName) {
+// In wheelchair mode the backend only snaps to and routes over accessible edges, so say "accessible path":
+// "nearest path" would be wrong when an ordinary path is right next to you.
+export function describeNoRoute(res, destName, mode = "walk") {
+  const wheelchair = mode === "wheelchair";
   switch (res.reason) {
     case "too_far":
-      return res.distance_m === null
-        ? "No usable path on this campus from here."
+      if (res.distance_m === null) {
+        return wheelchair ? "No accessible path on this campus from here." : "No usable path on this campus from here.";
+      }
+      return wheelchair
+        ? `Your start is ${formatDistance(res.distance_m)} from the nearest accessible path.`
         : `Your start is ${formatDistance(res.distance_m)} from the nearest path. Choose a start closer to campus.`;
     case "no_entrances":
       return `${destName} has no mapped entrances yet.`;
     case "no_path":
-      return `No path connects your start to ${destName}.`;
+      return wheelchair
+        ? `No accessible path connects your start to ${destName}.`
+        : `No path connects your start to ${destName}.`;
     default:
       return `No route found (${res.reason}).`; // a reason this frontend doesn't know yet
   }

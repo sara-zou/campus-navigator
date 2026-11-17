@@ -116,3 +116,52 @@ html, body {
   margin-top: 2px;
   color: #374151;
 }
+
+#mode-toggle {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px 8px;
+  border: none;
+}
+
+/* Visually hidden but still read by screen readers. */
+#mode-toggle legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+#mode-toggle label {
+  flex: 1;
+}
+
+/* The radio itself is hidden; its span is the visible button. */
+#mode-toggle input {
+  position: absolute;
+  opacity: 0;
+}
+
+#mode-toggle span {
+  display: block;
+  padding: 6px 0;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  text-align: center;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+#mode-toggle input:checked + span {
+  border-color: #6d28d9;
+  background: #6d28d9;
+  color: #fff;
+}
+
+#mode-toggle input:focus-visible + span {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}

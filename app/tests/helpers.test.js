@@ -76,3 +76,25 @@ test("describeNoRoute no_entrances and no_path name the destination", () => {
 test("describeNoRoute unknown reason", () => {
   assert.equal(describeNoRoute({ reason: "closed", distance_m: null }, "X"), "No route found (closed).");
 });
+
+test("describeNoRoute defaults to walk messages", () => {
+  assert.equal(describeNoRoute({ reason: "no_path", distance_m: null }, "X"),
+    describeNoRoute({ reason: "no_path", distance_m: null }, "X", "walk"));
+});
+
+test("describeNoRoute wheelchair too_far says accessible path", () => {
+  assert.equal(describeNoRoute({ reason: "too_far", distance_m: 352.4 }, "Snell", "wheelchair"),
+    "Your start is 350 m from the nearest accessible path.");
+  assert.equal(describeNoRoute({ reason: "too_far", distance_m: null }, "Snell", "wheelchair"),
+    "No accessible path on this campus from here.");
+});
+
+test("describeNoRoute wheelchair no_path says accessible path", () => {
+  assert.equal(describeNoRoute({ reason: "no_path", distance_m: null }, "Ell Hall", "wheelchair"),
+    "No accessible path connects your start to Ell Hall.");
+});
+
+test("describeNoRoute no_entrances is the same in every mode", () => {
+  assert.equal(describeNoRoute({ reason: "no_entrances", distance_m: null }, "Ell Hall", "wheelchair"),
+    "Ell Hall has no mapped entrances yet.");
+});
