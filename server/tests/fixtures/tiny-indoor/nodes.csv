@@ -1,0 +1,14 @@
+node_id,campus_id,building_id,floor,coord_system,x_or_lat,y_or_lon,type,indoor,accessible
+o1,tiny-indoor,,0,latlon,42.30005,-71.1001,waypoint,False,
+o2,tiny-indoor,,0,latlon,42.30005,-71.1005,waypoint,False,
+o3,tiny-indoor,,0,latlon,42.30035,-71.1005,waypoint,False,
+o4,tiny-indoor,,0,latlon,42.30035,-71.1001,waypoint,False,
+e1,tiny-indoor,hq,0,latlon,42.3001,-71.1001,entrance,False,True
+e2,tiny-indoor,hq,1,latlon,42.3003,-71.1001,entrance,False,False
+c0,tiny-indoor,hq,0,latlon,42.30015,-71.1001,corridor,True,
+s0,tiny-indoor,hq,0,latlon,42.3002,-71.10015,stairs,True,
+s1,tiny-indoor,hq,1,latlon,42.3002,-71.10015,stairs,True,
+l0,tiny-indoor,hq,0,latlon,42.3002,-71.10005,elevator,True,
+l1,tiny-indoor,hq,1,latlon,42.3002,-71.10005,elevator,True,
+c1,tiny-indoor,hq,1,latlon,42.30025,-71.1001,corridor,True,
+r101,tiny-indoor,hq,1,latlon,42.30027,-71.10003,room,True,

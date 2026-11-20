@@ -1,0 +1,15 @@
+from_node,to_node,cost,cost_unit,edge_type,accessible
+o1,o2,32.9,meters,footway,True
+o2,o3,33.4,meters,footway,True
+o3,o4,32.9,meters,footway,True
+o1,e1,5.6,meters,connector,True
+o4,e2,5.6,meters,connector,True
+e1,c0,5.6,meters,corridor,True
+c0,s0,6.9,meters,corridor,True
+c0,l0,6.9,meters,corridor,True
+s1,c1,6.9,meters,corridor,True
+l1,c1,6.9,meters,corridor,True
+c1,r101,6.2,meters,corridor,True
+c1,e2,5.6,meters,corridor,True
+s0,s1,15,seconds,steps,False
+l0,l1,35,seconds,elevator,True

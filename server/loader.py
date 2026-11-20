@@ -14,7 +14,7 @@ from types import MappingProxyType
 
 CAMPUS_ID_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")  # becomes /campuses/{id} in the API
 SWAP_CHECK_M = 50_000     # building points must be this close to the nodes' bbox
-ENTRANCE_MAX_M = 100      # entrances must be this close to their building's bbox
+NEAR_BUILDING_M = 100     # nodes with a building_id must be this close to their building's bbox
 
 BUILDING_COLS = ["building_id", "name", "polygon_geojson"]
 GEOMETRY_TYPES = {"Polygon", "MultiPolygon"}
@@ -46,6 +46,7 @@ class Node:
     y_or_lon: float
     type: str                # open set; only "entrance" has special rules
     accessible: bool | None = None  # read for entrances only: is the door wheelchair-accessible? None = unknown
+    indoor: bool = False     # inside a building or enclosed space; snapping uses only edges with both ends outdoor
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,15 @@ def to_int(val, file, row, col):
         return int(val)
     except ValueError:
         raise LoadError(file, row, f"{col} must be an integer, got {val!r}") from None
+
+
+def to_bool(val, file, row, col):
+    """'True' -> True, 'False' -> False. Anything else, empty included, raises."""
+    if val == "True":
+        return True
+    if val == "False":
+        return False
+    raise LoadError(file, row, f"{col} must be True or False, got {val!r}")
 
 
 def to_bool_or_none(val, file, row, col):
@@ -256,7 +266,13 @@ def load_nodes(campus_dir, buildings):
         # wheelchair cost function reads it, and only for entrances
         accessible = to_bool_or_none(r.get("accessible", ""), file, row, "accessible")
 
-        nodes[node_id] = Node(node_id, campus_id, building_id, floor, coord_system, x, y, node_type, accessible)
+        # optional column (missing = every node outdoor); True or False only: "unknown whether
+        # indoors" means nothing. Entrances are usually False (the outdoor side of the door) but
+        # may be True when the door opens into an enclosed space such as a tunnel or atrium.
+        indoor = to_bool(r.get("indoor", "False"), file, row, "indoor")
+
+        nodes[node_id] = Node(node_id, campus_id, building_id, floor, coord_system, x, y, node_type,
+                              accessible, indoor)
     return nodes, entrances_by_building
 
 
@@ -361,7 +377,7 @@ def distance_to_bbox_m(lat, lon, box):
     return haversine_m(lat, lon, min(max(lat, min_lat), max_lat), min(max(lon, min_lon), max_lon))
 
 
-def check_cross_file(buildings, nodes, entrances_by_building):
+def check_cross_file(buildings, nodes):
     # Lat/lon swap: a swapped file lands thousands of km away, so a generous
     # limit catches it without rejecting satellite buildings.
     node_latlons = [(n.x_or_lat, n.y_or_lon) for n in nodes.values() if n.coord_system == "latlon"]
@@ -373,17 +389,18 @@ def check_cross_file(buildings, nodes, entrances_by_building):
                 raise LoadError("buildings.csv", None, f"building {building.id!r} is {worst / 1000:,.0f} km from "
                                                        "the campus's nodes (lat/lon swapped in buildings.csv or nodes.csv?)")
 
-    # Entrance near its building: catches a wrong building_id on an entrance.
-    for building_id, entrance_ids in entrances_by_building.items():
-        building_box = bbox(geometry_latlons(buildings[building_id].geometry))
-        for node_id in entrance_ids:
-            node = nodes[node_id]
-            if node.coord_system != "latlon":
-                continue
-            d = distance_to_bbox_m(node.x_or_lat, node.y_or_lon, building_box)
-            if d > ENTRANCE_MAX_M:
-                raise LoadError("nodes.csv", None, f"entrance {node_id!r} is {d:,.0f} m from its building "
-                                                   f"{building_id!r} (wrong building_id?)")
+    # Node near its building: catches a wrong building_id (an entrance labelled with the wrong
+    # building) and badly georeferenced indoor data (a converter's wrong origin or rotation).
+    building_boxes = {}
+    for node in nodes.values():
+        if node.building_id is None or node.coord_system != "latlon":
+            continue
+        if node.building_id not in building_boxes:
+            building_boxes[node.building_id] = bbox(geometry_latlons(buildings[node.building_id].geometry))
+        d = distance_to_bbox_m(node.x_or_lat, node.y_or_lon, building_boxes[node.building_id])
+        if d > NEAR_BUILDING_M:
+            raise LoadError("nodes.csv", None, f"{node.type} {node.id!r} is {d:,.0f} m from its building "
+                                               f"{node.building_id!r} (wrong building_id or georeferencing?)")
 
 
 # --- campus ---
@@ -399,7 +416,7 @@ def load_campus(campus_dir):
         nodes, entrances_by_building = load_nodes(campus_dir, buildings)
         adjacency = load_edges(campus_dir, nodes)
         pois = load_pois(campus_dir, nodes, buildings)
-        check_cross_file(buildings, nodes, entrances_by_building)
+        check_cross_file(buildings, nodes)
     except LoadError as e:
         raise LoadError(f"{campus_id}/{e.file}", e.row, e.msg) from None
 

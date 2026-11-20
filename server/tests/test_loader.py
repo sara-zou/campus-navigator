@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import copy_campus
+from conftest import INDOOR_FIXTURE, copy_campus
 from loader import (
     BUILDING_COLS, Campus, LoadError, check_latlon, distance_to_bbox_m, load_all, load_campus, check_one_of, load_buildings, load_edges, load_nodes, load_pois, read_rows,
-    require, to_bool_or_none, to_float, to_int,
+    require, to_bool, to_bool_or_none, to_float, to_int,
 )
 
 
@@ -96,6 +96,18 @@ def test_to_int_valid():
 def test_to_int_invalid(val):
     with pytest.raises(LoadError, match="f.csv:2: floor"):
         to_int(val, "f.csv", 2, "floor")
+
+
+@pytest.mark.parametrize("val, expected", [("True", True), ("False", False)])
+def test_to_bool_valid(val, expected):
+    assert to_bool(val, "f.csv", 2, "indoor") is expected
+
+
+@pytest.mark.parametrize("val", ["", "true", "yes", "1"])
+def test_to_bool_invalid(val):
+    # unlike to_bool_or_none, empty is not "unknown": it raises
+    with pytest.raises(LoadError, match="f.csv:2: indoor must be True or False"):
+        to_bool(val, "f.csv", 2, "indoor")
 
 
 @pytest.mark.parametrize("val, expected", [("True", True), ("False", False), ("", None)])
@@ -283,6 +295,57 @@ def test_load_nodes_real_northeastern():
     assert len(entrances) == 59
     # the source layer is accessible entrances only, so every door is True and nothing else is set
     assert all(n.accessible is (True if n.type == "entrance" else None) for n in nodes.values())
+
+
+# --- indoor (tiny-indoor fixture) ---
+# nodes.csv lines: 2 o1, 3 o2, 4 o3, 5 o4, 6 e1, 7 e2, 8 c0, 9 s0, 10 s1, 11 l0, 12 l1, 13 c1, 14 r101
+
+def test_load_tiny_indoor(tiny_indoor):
+    campus = load_campus(tiny_indoor)
+    assert len(campus.nodes) == 13
+    assert {n.id for n in campus.nodes.values() if n.indoor} == {"c0", "s0", "s1", "l0", "l1", "c1", "r101"}
+    assert campus.entrances_for("hq") == ("e1", "e2")
+    assert campus.nodes["e2"].floor == 1 and campus.nodes["e2"].accessible is False
+    lift = next(e for n, e in campus.adjacency["l0"] if n == "l1")
+    assert lift.cost_unit == "seconds" and lift.edge_type == "elevator"
+    assert campus.pois["poi_r101"].node_id == "r101"
+
+
+def test_without_indoor_column_every_node_is_outdoor(tiny_campus):
+    assert not any(n.indoor for n in load_campus(tiny_campus).nodes.values())
+
+
+@pytest.mark.parametrize("value", ["", "yes", "true"])
+def test_indoor_must_be_true_or_false(broken_campus, value):
+    campus_dir = broken_campus("nodes.csv", set_cell(8, "indoor", value), fixture=INDOOR_FIXTURE)
+    with pytest.raises(LoadError, match="nodes.csv:8: indoor must be True or False"):
+        load_campus(campus_dir)
+
+
+def test_indoor_entrance_is_allowed(broken_campus):
+    # a door opening into an enclosed space (tunnel, atrium) is itself indoors
+    campus_dir = broken_campus("nodes.csv", set_cell(6, "indoor", "True"), fixture=INDOOR_FIXTURE)
+    assert load_campus(campus_dir).nodes["e1"].indoor is True
+
+
+def test_indoor_node_without_building_is_allowed(broken_campus):
+    # e.g. a tunnel between buildings belongs to neither
+    campus_dir = broken_campus("nodes.csv", set_cell(8, "building_id", ""), fixture=INDOOR_FIXTURE)
+    c0 = load_campus(campus_dir).nodes["c0"]
+    assert c0.indoor is True and c0.building_id is None
+
+
+def test_far_indoor_node_is_rejected(broken_campus):
+    # r101 moved ~330 m north of hq's bbox (lat 42.3001-42.3003): a georeferencing bug
+    campus_dir = broken_campus("nodes.csv", set_cell(14, "x_or_lat", "42.3033"), fixture=INDOOR_FIXTURE)
+    with pytest.raises(LoadError, match=r"tiny-indoor/nodes.csv: room 'r101' is [\d,]+ m from its building 'hq'"):
+        load_campus(campus_dir)
+
+
+def test_near_building_check_ignores_nodes_without_building(broken_campus):
+    # o2 is an outdoor waypoint with no building_id; moving it ~150 m away is fine
+    campus_dir = broken_campus("nodes.csv", set_cell(3, "x_or_lat", "42.2988"), fixture=INDOOR_FIXTURE)
+    assert load_campus(campus_dir).nodes["o2"].x_or_lat == 42.2988
 
 
 # --- load_edges ---
@@ -539,6 +602,14 @@ def test_entrance_check_allows_nearby_entrance(broken_campus):
 
 
 # --- load_all ---
+
+def test_load_all_outdoor_and_indoor_campuses(tmp_path, tiny_campus, tiny_indoor):
+    copy_campus(tiny_campus, tmp_path, "tiny-campus")
+    copy_campus(tiny_indoor, tmp_path, "tiny-indoor")
+    campuses = load_all(tmp_path)
+    assert list(campuses) == ["tiny-campus", "tiny-indoor"]
+    assert campuses["tiny-indoor"].nodes["r101"].indoor and not campuses["tiny-campus"].nodes["w1"].indoor
+
 
 def test_load_all_multiple_campuses(tmp_path, tiny_campus):
     copy_campus(tiny_campus, tmp_path, "tiny-campus")

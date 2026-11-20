@@ -1,0 +1,4 @@
+poi_id,node_id,name,category,building_id,floor,accessible,notes
+poi_e1,e1,Headquarters (South Entrance),entrance,hq,0,True,
+poi_e2,e2,Headquarters (North Entrance),entrance,hq,1,False,Steps up from the street
+poi_r101,r101,Room 101,room,hq,1,,

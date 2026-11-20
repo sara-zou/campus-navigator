@@ -1,0 +1,2 @@
+building_id,name,polygon_geojson
+hq,Headquarters,"{""type"": ""Polygon"", ""coordinates"": [[[-71.1002, 42.3001], [-71.1000, 42.3001], [-71.1000, 42.3003], [-71.1002, 42.3003], [-71.1002, 42.3001]]]}"
