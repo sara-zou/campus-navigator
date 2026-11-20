@@ -23,7 +23,7 @@ NODE_COLS = ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_
 COORD_SYSTEMS = {"latlon"}  # "local" (indoor x/y) gets added with indoor support
 
 EDGE_COLS = ["from_node", "to_node", "cost", "cost_unit", "edge_type", "accessible"]
-COST_UNITS = {"meters"}  # "seconds" gets added with indoor support
+COST_UNITS = {"meters", "seconds"}  # seconds: stairs and elevators, whose cost is time, not length
 
 POI_COLS = ["poi_id", "node_id", "name", "category", "building_id", "floor", "accessible", "notes"]
 

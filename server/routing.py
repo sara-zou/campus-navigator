@@ -1,6 +1,7 @@
 """Shortest paths over a Campus adjacency list, with pluggable edge costs.
 
-One algorithm (Dijkstra); each routing mode is a different cost function.
+One algorithm (Dijkstra); each routing mode is a different cost function, built by
+a per-mode factory from the mode's speed (walk(1.4), wheelchair(1.1), ...).
 
 Cost function contract: cost_fn(edge, from_node) -> float | IMPASSABLE
 - from_node is the end the edge is being walked from (edges are undirected,
@@ -24,7 +25,7 @@ CostFn = Callable[[Edge, str], float | None]
 class Path:
     nodes: tuple[str, ...]   # source first, reached target last
     edges: tuple[Edge, ...]  # edge actually taken between each consecutive pair; len(nodes) - 1
-    cost: float              # in the cost function's unit
+    cost: float              # in the cost function's unit (seconds for walk/wheelchair)
 
 
 @dataclass(frozen=True)
@@ -95,20 +96,29 @@ def _build_path(target, prev, cost):
 
 
 # --- cost functions ---
+# Each mode is a factory: given the mode's travel speed (m/s), it returns a cost_fn
+# whose costs are seconds, so meters edges (paths, corridors) and seconds edges
+# (stairs, elevators) add up in one unit.
 
-def _meters(edge):
-    """The edge's cost in meters. Raises on any other unit so seconds never get added to meters."""
-    if edge.cost_unit != "meters":
-        raise ValueError(f"cost function expects meters, got {edge.cost_unit!r}")
-    return edge.cost
+def seconds(edge, speed):
+    """Time to traverse the edge: meters / speed, or its seconds as stored. Other units raise."""
+    if edge.cost_unit == "meters":
+        return edge.cost / speed
+    if edge.cost_unit == "seconds":
+        return edge.cost
+    raise ValueError(f"cost function expects meters or seconds, got {edge.cost_unit!r}")
 
 
-def distance(edge, from_node):
+def walk(speed):
     """Walking: every edge passes, steps and unknown accessibility included."""
-    return _meters(edge)
+    def cost_fn(edge, from_node):
+        return seconds(edge, speed)
+    return cost_fn
 
 
-def wheelchair(edge, from_node):
+def wheelchair(speed):
     """Wheelchair: only edges known to be accessible. False and unknown (None) are impassable."""
-    cost = _meters(edge)  # unit check first, so a bad unit raises even on a blocked edge
-    return cost if edge.accessible is True else IMPASSABLE
+    def cost_fn(edge, from_node):
+        cost = seconds(edge, speed)  # unit check first, so a bad unit raises even on a blocked edge
+        return cost if edge.accessible is True else IMPASSABLE
+    return cost_fn

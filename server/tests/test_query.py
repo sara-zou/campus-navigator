@@ -6,7 +6,10 @@ import pytest
 
 from loader import POI, Building, load_campus
 from query import START, Flag, NoRoute, Route, SearchResult, Snap, TooFar, route, search, snap
-from routing import IMPASSABLE, NoPath, distance, shortest_path, wheelchair
+from routing import IMPASSABLE, NoPath, shortest_path, walk, wheelchair
+
+WALK = walk(1.0)  # speed 1: path costs in seconds equal meters
+WHEELCHAIR = wheelchair(1.0)
 
 REAL_CAMPUS = Path(__file__).parents[2] / "data" / "northeastern-boston"
 
@@ -195,7 +198,7 @@ def test_overlay_links_back_and_leaves_campus_untouched(campus):
 
 def test_route_from_snap(campus):
     s = snap(campus, 42.0015, -71.0017)
-    path = shortest_path(s.adjacency, {s.node_id}, campus.entrances_for("bA"), distance)
+    path = shortest_path(s.adjacency, {s.node_id}, campus.entrances_for("bA"), WALK)
     assert path.nodes == (START, "w3", "eA2")
     assert path.cost == pytest.approx(111.2 + 93.7, abs=0.1)
 
@@ -218,7 +221,7 @@ def test_walking_snaps_onto_steps_wheelchair_avoids_them(campus):
     assert walk.distance_m == pytest.approx(0, abs=0.01)
     assert [e.edge_type for _, e in walk.adjacency[START]] == ["steps", "steps"]
 
-    wc = snap(campus, *on_steps, cost_fn=wheelchair)
+    wc = snap(campus, *on_steps, cost_fn=WHEELCHAIR)
     assert start_neighbors(wc) == ["w2", "w3"]
     assert wc.distance_m == pytest.approx(41.4, abs=0.2)
 
@@ -226,11 +229,11 @@ def test_walking_snaps_onto_steps_wheelchair_avoids_them(campus):
 def test_parallel_edges_are_all_split(broken_campus):
     campus = load_campus(broken_campus(
         "edges.csv", lambda rows: rows + [["w1", "w3", "260.0", "meters", "footway", "True"]]))
-    s = snap(campus, 42.0015, -71.0010, cost_fn=wheelchair)  # accessible footway beside the steps
+    s = snap(campus, 42.0015, -71.0010, cost_fn=WHEELCHAIR)  # accessible footway beside the steps
     assert s.distance_m == pytest.approx(0, abs=0.01)
     assert sorted(e.edge_type for _, e in s.adjacency[START]) == ["footway", "footway", "steps", "steps"]
 
-    path = shortest_path(s.adjacency, {s.node_id}, campus.entrances_for("bA"), wheelchair)
+    path = shortest_path(s.adjacency, {s.node_id}, campus.entrances_for("bA"), WHEELCHAIR)
     assert path.nodes == (START, "w1", "eA1")
     assert path.edges[0].edge_type == "footway"
     assert path.cost == pytest.approx(130.0 + 44.5)
@@ -249,7 +252,7 @@ def test_no_usable_edge_is_too_far_inf(campus):
 def test_island_snap_then_no_path(campus):
     s = snap(campus, 42.00525, -71.0051)
     assert start_neighbors(s) == ["i1", "i2"]
-    assert shortest_path(s.adjacency, {s.node_id}, campus.entrances_for("bA"), distance) == NoPath()
+    assert shortest_path(s.adjacency, {s.node_id}, campus.entrances_for("bA"), WALK) == NoPath()
 
 
 @pytest.mark.parametrize("lat, lon", [(91, 0), (0, -181), (math.nan, 0), (0, math.inf)])
@@ -332,6 +335,29 @@ def test_wheelchair_avoids_steps_and_is_slower(campus):
     assert walk.distance_m == pytest.approx(240.0 + 44.5)              # w3 -steps- w1 - eA1
     assert wc.distance_m == pytest.approx(222.4 + 82.8 + 44.5)         # w3 - w2 - w1 - eA1
     assert wc.duration_s == pytest.approx(wc.distance_m / 1.1)
+
+
+def with_lift(broken_campus, secs):
+    """tiny-campus plus an accessible seconds edge (an "elevator") parallel to the w1-w3 steps."""
+    return load_campus(broken_campus(
+        "edges.csv", lambda rows: rows + [["w1", "w3", str(secs), "seconds", "elevator", "True"]]))
+
+
+@pytest.mark.parametrize("mode, speed", [("walk", 1.4), ("wheelchair", 1.1)])
+def test_fast_seconds_edge_is_taken_and_counts_as_time_only(broken_campus, mode, speed):
+    # 60 s beats the steps (240 m / 1.4 = 171 s) and the long way round
+    r = route(with_lift(broken_campus, 60), *AT_W3, to_poi="poi_eA1", mode=mode)
+    assert r.nodes == ("w3", "w1", "eA1")
+    assert r.edges[0].edge_type == "elevator"
+    assert r.distance_m == pytest.approx(44.5)                  # the 60 s edge adds no meters
+    assert r.duration_s == pytest.approx(44.5 / speed + 60)     # but does add its seconds
+
+
+def test_slow_seconds_edge_loses_to_meters(broken_campus):
+    # 1000 s is slower than walking the steps, so walking ignores it
+    r = route(with_lift(broken_campus, 1000), *AT_W3, to_poi="poi_eA1")
+    assert [e.edge_type for e in r.edges] == ["steps", "connector"]
+    assert r.duration_s == pytest.approx((240.0 + 44.5) / 1.4)
 
 
 def test_start_on_entrance_is_zero_length(campus):

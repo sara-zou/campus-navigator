@@ -288,6 +288,13 @@ def test_load_edges_fixture(tiny_campus):
     assert steps.accessible is False and steps.edge_type == "steps" and steps.cost == 240.0
 
 
+def test_load_edges_accepts_seconds(broken_campus):
+    campus_dir = broken_campus("edges.csv", lambda rows: rows + [["w1", "w3", "35", "seconds", "elevator", "True"]])
+    adjacency = load_fixture_edges(campus_dir)
+    lift = next(e for n, e in adjacency["w1"] if n == "w3" and e.edge_type == "elevator")
+    assert lift.cost_unit == "seconds" and lift.cost == 35.0
+
+
 def test_load_edges_symmetric(tiny_campus):
     adjacency = load_fixture_edges(tiny_campus)
     for a, entries in adjacency.items():

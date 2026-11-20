@@ -1,3 +1,4 @@
+
 """Query layer: turns user-facing requests into routing calls and readable results.
 
 Search is a pure lookup over names; it never touches the graph.
@@ -10,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from loader import Edge, haversine_m
-from routing import IMPASSABLE, NoPath, distance, shortest_path, wheelchair
+from routing import IMPASSABLE, NoPath, shortest_path, walk, wheelchair
 
 DEFAULT_SEARCH_LIMIT = 20
 
@@ -19,8 +20,8 @@ ENDPOINT_EPS_M = 0.5      # a projection this close to an existing node just use
 START = "__start__"       # id of the temporary node; the loader rejects node ids starting with "__"
 EARTH_R_M = 6_371_000
 
-MODES = {  # mode name -> (cost function, travel speed in m/s); wheelchair speed is a placeholder
-    "walk": (distance, 1.4),
+MODES = {  # mode name -> (cost function factory, travel speed in m/s); wheelchair speed is a placeholder
+    "walk": (walk, 1.4),
     "wheelchair": (wheelchair, 1.1),
 }
 
@@ -237,9 +238,9 @@ class Flag:
 @dataclass(frozen=True)
 class Route:
     coords: tuple[tuple[float, float], ...]  # (lat, lon) polyline: the snapped point, then each node
-    distance_m: float          # along the graph: sum of the edges taken, in meters
+    distance_m: float          # along the graph: sum of the meters edges taken (floor changes excluded)
     approach_m: float          # GPS point -> snapped point, off the graph (not in coords)
-    duration_s: float          # (approach_m + distance_m) / the mode's speed
+    duration_s: float          # (approach_m + distance_m) / the mode's speed + seconds edges
     entrance_id: str           # node reached
     entrance_name: str | None  # name of a POI on that node (first by poi_id), if any
     building_id: str | None    # the reached node's building
@@ -271,7 +272,8 @@ def route(campus, lat, lon, *, to_building=None, to_poi=None, to_entrance=None, 
         raise ValueError("give exactly one of to_building, to_poi, to_entrance")
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; expected one of {sorted(MODES)}")
-    cost_fn, speed = MODES[mode]
+    make_cost_fn, speed = MODES[mode]
+    cost_fn = make_cost_fn(speed)
 
     if to_building is not None:
         targets = campus.entrances_for(to_building)
@@ -294,13 +296,13 @@ def route(campus, lat, lon, *, to_building=None, to_poi=None, to_entrance=None, 
 
     coords = ((s.lat, s.lon),) + tuple(
         (campus.nodes[n].x_or_lat, campus.nodes[n].y_or_lon) for n in path.nodes[1:])
-    meters = sum(_edge_meters(e) for e in path.edges)
+    meters, secs = _edge_totals(path.edges)
     end = campus.nodes[path.nodes[-1]]
     return Route(
         coords=coords,
         distance_m=meters,
         approach_m=s.distance_m,
-        duration_s=(s.distance_m + meters) / speed,
+        duration_s=(s.distance_m + meters) / speed + secs,
         entrance_id=end.id,
         entrance_name=poi_name_at(campus, end.id),
         building_id=end.building_id,
@@ -319,11 +321,18 @@ def flags_for(edges):
     return tuple(Flag(i, e.accessible, e.edge_type) for i, e in enumerate(edges) if e.accessible is not True)
 
 
-def _edge_meters(edge):
-    """Real length, independent of the cost function (which may add penalties that aren't meters)."""
-    if edge.cost_unit != "meters":
-        raise ValueError(f"route distance expects meters, got {edge.cost_unit!r}")
-    return edge.cost
+def _edge_totals(edges):
+    """(meters, seconds) summed from the edges' own costs, by unit.
+
+    Independent of the cost function, which may add penalties that are neither. Seconds
+    edges (stairs, elevators) count toward time only, never toward distance.
+    """
+    totals = {"meters": 0.0, "seconds": 0.0}
+    for e in edges:
+        if e.cost_unit not in totals:
+            raise ValueError(f"route totals expect meters or seconds, got {e.cost_unit!r}")
+        totals[e.cost_unit] += e.cost
+    return totals["meters"], totals["seconds"]
 
 
 def poi_name_at(campus, node_id):
