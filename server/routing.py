@@ -1,7 +1,8 @@
 """Shortest paths over a Campus adjacency list, with pluggable edge costs.
 
 One algorithm (Dijkstra); each routing mode is a different cost function, built by
-a per-mode factory from the mode's speed (walk(1.4), wheelchair(1.1), ...).
+a per-mode factory from the campus's nodes and the mode's speed
+(walk(nodes, 1.4), wheelchair(nodes, 1.1), ...).
 
 Cost function contract: cost_fn(edge, from_node) -> float | IMPASSABLE
 - from_node is the end the edge is being walked from (edges are undirected,
@@ -96,9 +97,9 @@ def _build_path(target, prev, cost):
 
 
 # --- cost functions ---
-# Each mode is a factory: given the mode's travel speed (m/s), it returns a cost_fn
-# whose costs are seconds, so meters edges (paths, corridors) and seconds edges
-# (stairs, elevators) add up in one unit.
+# Each mode is a factory: given the campus's nodes and the mode's travel speed (m/s),
+# it returns a cost_fn whose costs are seconds, so meters edges (paths, corridors) and
+# seconds edges (stairs, elevators) add up in one unit.
 
 def seconds(edge, speed):
     """Time to traverse the edge: meters / speed, or its seconds as stored. Other units raise."""
@@ -109,16 +110,25 @@ def seconds(edge, speed):
     raise ValueError(f"cost function expects meters or seconds, got {edge.cost_unit!r}")
 
 
-def walk(speed):
-    """Walking: every edge passes, steps and unknown accessibility included."""
+def walk(nodes, speed):
+    """Walking: every edge passes, steps, unknown accessibility and any door included."""
     def cost_fn(edge, from_node):
         return seconds(edge, speed)
     return cost_fn
 
 
-def wheelchair(speed):
-    """Wheelchair: only edges known to be accessible. False and unknown (None) are impassable."""
+def wheelchair(nodes, speed):
+    """Wheelchair: only edges known to be accessible, and none touching a door that isn't.
+
+    An entrance whose accessible is not True (False or unknown) blocks every edge at it,
+    in both directions, so a route can't end there, start from it, or pass through it.
+    Nodes missing from `nodes` (query-time temporary ones like START) are never doors.
+    """
+    blocked = frozenset(n.id for n in nodes.values() if n.type == "entrance" and n.accessible is not True)
+
     def cost_fn(edge, from_node):
         cost = seconds(edge, speed)  # unit check first, so a bad unit raises even on a blocked edge
-        return cost if edge.accessible is True else IMPASSABLE
+        if edge.accessible is not True or edge.from_node in blocked or edge.to_node in blocked:
+            return IMPASSABLE
+        return cost
     return cost_fn

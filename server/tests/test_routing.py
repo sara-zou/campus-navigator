@@ -2,7 +2,7 @@ from pathlib import Path as FsPath
 
 import pytest
 
-from loader import Edge, load_campus
+from loader import Edge, Node, load_campus
 from routing import IMPASSABLE, NoPath, Path, shortest_path, walk, wheelchair
 
 # tiny-campus graph:  eA1 -44.5- w1 -82.8- w2 -222.4- w3 -93.7- eA2
@@ -18,13 +18,14 @@ def edge(accessible=True, unit="meters", cost=10.0):
 
 # --- cost functions ---
 # Path tests below use speed 1, so seconds equal meters and expected costs read as meters.
-WALK = walk(1.0)
-WHEELCHAIR = wheelchair(1.0)
+# No nodes passed: no door is blocked (door tests build their own with campus.nodes).
+WALK = walk({}, 1.0)
+WHEELCHAIR = wheelchair({}, 1.0)
 
 
 @pytest.mark.parametrize("acc", [True, False, None])
 def test_walk_passes_every_edge(acc):
-    assert walk(2.0)(edge(accessible=acc), "a") == 5.0  # 10 m at 2 m/s
+    assert walk({}, 2.0)(edge(accessible=acc), "a") == 5.0  # 10 m at 2 m/s
 
 
 def test_walk_ignores_direction():
@@ -32,7 +33,7 @@ def test_walk_ignores_direction():
 
 
 def test_wheelchair_passes_known_accessible():
-    assert wheelchair(2.0)(edge(accessible=True), "a") == 5.0
+    assert wheelchair({}, 2.0)(edge(accessible=True), "a") == 5.0
 
 
 @pytest.mark.parametrize("acc", [False, None])
@@ -43,13 +44,13 @@ def test_wheelchair_blocks_inaccessible_and_unknown(acc):
 @pytest.mark.parametrize("make", [walk, wheelchair])
 def test_seconds_edges_pass_through_unscaled(make):
     # an elevator ride takes as long whatever the mode's speed
-    assert make(1.4)(edge(unit="seconds", cost=35.0), "a") == 35.0
-    assert make(0.5)(edge(unit="seconds", cost=35.0), "a") == 35.0
+    assert make({}, 1.4)(edge(unit="seconds", cost=35.0), "a") == 35.0
+    assert make({}, 0.5)(edge(unit="seconds", cost=35.0), "a") == 35.0
 
 
 def test_meters_scale_with_speed():
-    assert walk(1.4)(edge(cost=14.0), "a") == pytest.approx(10.0)
-    assert wheelchair(1.1)(edge(cost=11.0), "a") == pytest.approx(10.0)
+    assert walk({}, 1.4)(edge(cost=14.0), "a") == pytest.approx(10.0)
+    assert wheelchair({}, 1.1)(edge(cost=11.0), "a") == pytest.approx(10.0)
 
 
 def test_zero_cost_is_not_impassable():
@@ -64,7 +65,43 @@ def test_zero_cost_is_not_impassable():
 def test_cost_fns_reject_unknown_units(make, acc):
     # the unit check runs before the accessibility check, so a blocked edge still raises
     with pytest.raises(ValueError, match="meters or seconds"):
-        make(1.0)(edge(accessible=acc, unit="feet"), "a")
+        make({}, 1.0)(edge(accessible=acc, unit="feet"), "a")
+
+
+def door(accessible):
+    """nodes for edge(): "a" is an entrance with the given accessible, "b" a plain waypoint."""
+    return {"a": Node("a", "c", "bA", 0, "latlon", 42.0, -71.0, "entrance", accessible),
+            "b": Node("b", "c", None, 0, "latlon", 42.0, -71.0, "waypoint", None)}
+
+
+@pytest.mark.parametrize("acc", [False, None])
+@pytest.mark.parametrize("from_node", ["a", "b"])
+def test_wheelchair_blocks_every_edge_at_an_inaccessible_door(acc, from_node):
+    # into the door ("b" -> "a") and out of it ("a" -> "b"): ending, starting and passing through
+    assert wheelchair(door(acc), 1.0)(edge(), from_node) is IMPASSABLE
+
+
+def test_wheelchair_passes_an_accessible_door():
+    assert wheelchair(door(True), 1.0)(edge(), "a") == 10.0
+
+
+@pytest.mark.parametrize("acc", [False, None])
+def test_walk_ignores_door_accessibility(acc):
+    assert walk(door(acc), 1.0)(edge(), "a") == 10.0
+
+
+@pytest.mark.parametrize("acc", [False, None])
+def test_wheelchair_only_doors_block(acc):
+    # an inaccessible-flagged waypoint is ignored: node accessible is read for entrances only
+    nodes = door(True)
+    nodes["b"] = Node("b", "c", None, 0, "latlon", 42.0, -71.0, "waypoint", acc)
+    assert wheelchair(nodes, 1.0)(edge(), "b") == 10.0
+
+
+def test_wheelchair_unknown_node_is_not_a_door():
+    # query-time temporary nodes (START) aren't in campus.nodes and must never block
+    start_edge = Edge("__start__", "b", 10.0, "meters", "footway", True)
+    assert wheelchair(door(False), 1.0)(start_edge, "__start__") == 10.0
 
 
 # --- shortest_path ---

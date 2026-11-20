@@ -227,10 +227,25 @@ def test_load_nodes_fixture(tiny_campus):
     (4, "building_id", "bB"),    # waypoint inside a building
     (2, "floor", "2"),           # entrance not on floor 0
     (4, "type", "gate"),         # open type set
+    (2, "accessible", "False"),  # a door with steps
+    (2, "accessible", ""),       # door accessibility unknown
+    (4, "accessible", "True"),   # allowed on non-entrances (ignored by routing)
 ])
 def test_load_nodes_accepts(broken_campus, line, col, value):
     nodes, _ = load_fixture_nodes(broken_campus("nodes.csv", set_cell(line, col, value)))
     assert len(nodes) == 7
+
+
+def test_load_nodes_accessible(tiny_campus):
+    nodes, _ = load_fixture_nodes(tiny_campus)
+    assert nodes["eA1"].accessible is True
+    assert nodes["w1"].accessible is None  # empty = unknown
+
+
+def test_load_nodes_without_accessible_column_is_all_unknown(broken_campus):
+    drop_last = lambda rows: [r[:-1] for r in rows]  # accessible is the last column
+    nodes, _ = load_fixture_nodes(broken_campus("nodes.csv", drop_last))
+    assert len(nodes) == 7 and all(n.accessible is None for n in nodes.values())
 
 
 def test_load_nodes_non_entrance_type_is_not_indexed(broken_campus):
@@ -252,6 +267,7 @@ def test_load_nodes_non_entrance_type_is_not_indexed(broken_campus):
     (2, "x_or_lat", "95", "x_or_lat/y_or_lon: out of lat/lon range"),
     (4, "type", "", "type is required"),
     (2, "building_id", "", "entrance must have a building_id"),
+    (2, "accessible", "yes", "accessible must be True, False, or empty"),
 ])
 def test_load_nodes_rejects(broken_campus, line, col, value, message):
     campus_dir = broken_campus("nodes.csv", set_cell(line, col, value))
@@ -265,6 +281,8 @@ def test_load_nodes_real_northeastern():
     assert len(nodes) == 2060
     assert sum(len(ids) for ids in entrances.values()) == 82
     assert len(entrances) == 59
+    # the source layer is accessible entrances only, so every door is True and nothing else is set
+    assert all(n.accessible is (True if n.type == "entrance" else None) for n in nodes.values())
 
 
 # --- load_edges ---

@@ -72,7 +72,7 @@ def main():
 
     buildings = [b for b in buildings if b["building_id"] not in CORRECTIONS]
 
-    write_csv(nodes_path, ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type"], nodes)
+    write_csv(nodes_path, ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type", "accessible"], nodes)
     write_csv(pois_path, ["poi_id", "node_id", "name", "category", "building_id", "floor", "accessible", "notes"], pois)
     write_csv(buildings_path, ["building_id", "name", "polygon_geojson"], buildings)
 

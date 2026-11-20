@@ -273,7 +273,7 @@ def route(campus, lat, lon, *, to_building=None, to_poi=None, to_entrance=None, 
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; expected one of {sorted(MODES)}")
     make_cost_fn, speed = MODES[mode]
-    cost_fn = make_cost_fn(speed)
+    cost_fn = make_cost_fn(campus.nodes, speed)
 
     if to_building is not None:
         targets = campus.entrances_for(to_building)

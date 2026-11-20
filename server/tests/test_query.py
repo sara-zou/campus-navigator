@@ -8,8 +8,8 @@ from loader import POI, Building, load_campus
 from query import START, Flag, NoRoute, Route, SearchResult, Snap, TooFar, route, search, snap
 from routing import IMPASSABLE, NoPath, shortest_path, walk, wheelchair
 
-WALK = walk(1.0)  # speed 1: path costs in seconds equal meters
-WHEELCHAIR = wheelchair(1.0)
+WALK = walk({}, 1.0)  # speed 1: path costs in seconds equal meters
+WHEELCHAIR = wheelchair({}, 1.0)
 
 REAL_CAMPUS = Path(__file__).parents[2] / "data" / "northeastern-boston"
 
@@ -360,6 +360,43 @@ def test_slow_seconds_edge_loses_to_meters(broken_campus):
     assert r.duration_s == pytest.approx((240.0 + 44.5) / 1.4)
 
 
+def door_blocked(broken_campus, *lines, value="False"):
+    """tiny-campus with the doors on the given nodes.csv lines (2 = eA1, 3 = eA2) not accessible."""
+    def edit(rows):
+        for line in lines:
+            rows[line - 1][rows[0].index("accessible")] = value
+        return rows
+    return load_campus(broken_campus("nodes.csv", edit))
+
+
+@pytest.mark.parametrize("value", ["False", ""])  # known steps, or unknown
+def test_wheelchair_skips_an_inaccessible_door(broken_campus, value):
+    campus = door_blocked(broken_campus, 3, value=value)  # eA2, the nearer door from w3
+    assert route(campus, *AT_W3, to_building="bA").entrance_id == "eA2"  # walking doesn't care
+    wc = route(campus, *AT_W3, to_building="bA", mode="wheelchair")
+    assert wc.entrance_id == "eA1" and "eA2" not in wc.nodes
+
+
+def test_wheelchair_no_path_when_every_door_is_blocked(broken_campus):
+    campus = door_blocked(broken_campus, 2, 3)
+    assert route(campus, *AT_W3, to_building="bA", mode="wheelchair") == NoRoute("no_path")
+
+
+def test_wheelchair_to_a_blocked_entrance_is_no_path(broken_campus):
+    campus = door_blocked(broken_campus, 3)
+    assert route(campus, *AT_W3, to_entrance="eA2").entrance_id == "eA2"
+    assert route(campus, *AT_W3, to_entrance="eA2", mode="wheelchair") == NoRoute("no_path")
+
+
+def test_wheelchair_never_snaps_onto_a_blocked_door(broken_campus):
+    campus = door_blocked(broken_campus, 3)
+    near_connector = (42.0023, -71.0010)  # middle of the w3-eA2 connector
+    assert start_neighbors(snap(campus, *near_connector)) == ["eA2", "w3"]
+    wc = snap(campus, *near_connector, cost_fn=wheelchair(campus.nodes, 1.1))
+    assert wc.node_id != "eA2"
+    assert wc.node_id != START or "eA2" not in start_neighbors(wc)
+
+
 def test_start_on_entrance_is_zero_length(campus):
     r = route(campus, 42.0009, -71.0005, to_building="bA")  # exactly eA1
     assert r.coords == ((42.0009, -71.0005),)
@@ -419,3 +456,15 @@ def test_route_on_real_campus():
     for mode in ("walk", "wheelchair"):
         r = route(campus, 42.3398, -71.0892, to_building="ry", mode=mode)
         assert isinstance(r, Route) and r.building_id == "ry"
+
+
+def test_real_campus_door_rule_cuts_nothing_off():
+    # Every Northeastern door is accessible=True, so wheelchair reachability must be exactly
+    # what the edges alone allow. (Two buildings, wve and ha, are reachable only over steps;
+    # that's the sidewalk data, not the door rule.)
+    campus = load_campus(REAL_CAMPUS)
+    start = [campus.entrances_by_building["ry"][0]]
+    with_doors, edges_only = wheelchair(campus.nodes, 1.1), wheelchair({}, 1.1)
+    for building_id, entrances in campus.entrances_by_building.items():
+        assert (shortest_path(campus.adjacency, start, entrances, with_doors)
+                == shortest_path(campus.adjacency, start, entrances, edges_only)), building_id

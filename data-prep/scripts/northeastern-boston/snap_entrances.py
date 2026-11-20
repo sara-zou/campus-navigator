@@ -37,7 +37,7 @@ from osm_graph import CAMPUS_ID, drop_exact_duplicate_rows, load_filtered_graph,
 NODES_CSV = Path(__file__).parent.parent.parent.parent / "data" / CAMPUS_ID / "nodes.csv"
 EDGES_CSV = Path(__file__).parent.parent.parent.parent / "data" / CAMPUS_ID / "edges.csv"
 
-NODES_FIELDNAMES = ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type"]
+NODES_FIELDNAMES = ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type", "accessible"]
 EDGES_FIELDNAMES = ["from_node", "to_node", "cost", "cost_unit", "edge_type", "accessible"]
 
 
@@ -132,6 +132,7 @@ def main():
                 "x_or_lat": split_lat,
                 "y_or_lon": split_lon,
                 "type": "waypoint",
+                "accessible": "",  # read for entrances only
             })
             edge_rows.append({
                 "from_node": entrance["node_id"],

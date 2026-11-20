@@ -67,6 +67,8 @@ def main():
             "x_or_lat": lat,
             "y_or_lon": lon,
             "type": "entrance",
+            # the source layer holds only accessible entrances (AmenityType = "Accessible Entrance")
+            "accessible": True,
         })
 
         # Combine Comments + Notes into one free-text field
@@ -91,7 +93,7 @@ def main():
               buildings.values())
 
     write_csv(OUT_DIR / "nodes.csv",
-              ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type"],
+              ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type", "accessible"],
               nodes)
 
     write_csv(OUT_DIR / "pois.csv",

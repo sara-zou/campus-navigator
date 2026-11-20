@@ -20,7 +20,7 @@ BUILDING_COLS = ["building_id", "name", "polygon_geojson"]
 GEOMETRY_TYPES = {"Polygon", "MultiPolygon"}
 
 NODE_COLS = ["node_id", "campus_id", "building_id", "floor", "coord_system", "x_or_lat", "y_or_lon", "type"]
-COORD_SYSTEMS = {"latlon"}  # "local" (indoor x/y) gets added with indoor support
+COORD_SYSTEMS = {"latlon"}  # indoor nodes use latlon + floor too; "local" isn't planned
 
 EDGE_COLS = ["from_node", "to_node", "cost", "cost_unit", "edge_type", "accessible"]
 COST_UNITS = {"meters", "seconds"}  # seconds: stairs and elevators, whose cost is time, not length
@@ -45,6 +45,7 @@ class Node:
     x_or_lat: float
     y_or_lon: float
     type: str                # open set; only "entrance" has special rules
+    accessible: bool | None = None  # read for entrances only: is the door wheelchair-accessible? None = unknown
 
 
 @dataclass(frozen=True)
@@ -251,7 +252,11 @@ def load_nodes(campus_dir, buildings):
                 raise LoadError(file, row, "entrance must have a building_id")
             entrances_by_building.setdefault(building_id, []).append(node_id)
 
-        nodes[node_id] = Node(node_id, campus_id, building_id, floor, coord_system, x, y, node_type)
+        # optional column (missing = unknown everywhere); allowed on any node, but only the
+        # wheelchair cost function reads it, and only for entrances
+        accessible = to_bool_or_none(r.get("accessible", ""), file, row, "accessible")
+
+        nodes[node_id] = Node(node_id, campus_id, building_id, floor, coord_system, x, y, node_type, accessible)
     return nodes, entrances_by_building
 
 
