@@ -35,6 +35,7 @@ def fake_campus(buildings=(), pois=()):
     return SimpleNamespace(
         buildings={i: Building(i, n, {}) for i, n in buildings},
         pois={p[0]: poi(*p) for p in pois},
+        nodes={"n": SimpleNamespace(indoor=False, building_id=None)},  # every POI sits on outdoor node "n"
     )
 
 
@@ -168,6 +169,49 @@ def test_folded_pois_dont_use_up_limit():
 def test_pois_never_match_by_id():
     c = fake_campus(pois=[("lobby", "Main Entrance", None)])
     assert search(c, "lobby") == ()
+
+
+# --- outdoor vs in-building search (tiny-indoor) ---
+
+def test_outdoor_search_leaves_out_indoor_pois(indoor):
+    assert search(indoor, "room 101") == ()
+    assert ids(search(indoor, "headquarters")) == ["hq"]   # doors are outdoor nodes: still fold
+
+
+def test_building_search_finds_rooms_with_poi_floor(indoor):
+    assert search(indoor, "room", building="hq") == (SearchResult("poi", "poi_r101", "Room 101", "hq", 1),)
+
+
+def test_building_search_lists_doors_unfolded(indoor):
+    assert ids(search(indoor, "entrance", building="hq")) == ["poi_e2", "poi_e1"]  # by name
+
+
+def test_building_search_has_no_building_results(indoor):
+    assert all(r.kind == "poi" for r in search(indoor, "headquarters", building="hq"))
+
+
+def test_building_search_unknown_building_raises(indoor):
+    with pytest.raises(KeyError):
+        search(indoor, "room", building="nope")
+
+
+def test_building_search_blank_q(indoor):
+    assert search(indoor, "  ", building="hq") == ()
+
+
+def test_poi_without_building_id_uses_its_nodes(broken_campus):
+    # poi_r101's building_id emptied: it's still in hq, via node r101
+    c = load_campus(broken_campus("pois.csv", lambda rows: [r[:4] + [""] + r[5:] if r[0] == "poi_r101" else r
+                                                            for r in rows], fixture=INDOOR_FIXTURE))
+    assert search(c, "room", building="hq") == (SearchResult("poi", "poi_r101", "Room 101", "hq", 1),)
+
+
+def test_poi_floor_shown_as_is_not_nodes(broken_campus):
+    # a schematic POI: says floor 3 but points at door e1 (floor 0); search shows the POI's floor
+    extra = ["poi_wc", "e1", "Restroom", "restroom", "hq", "3", "", ""]
+    c = load_campus(broken_campus("pois.csv", lambda rows: rows + [extra], fixture=INDOOR_FIXTURE))
+    (r,) = search(c, "restroom", building="hq")
+    assert r.floor == 3
 
 
 # --- snapping ---

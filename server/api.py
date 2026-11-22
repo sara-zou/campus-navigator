@@ -37,15 +37,24 @@ def campus_bounds(campus):
 
 
 def building_summaries(campus):
-    """Every building with its GeoJSON geometry ([lon, lat]) and entrances (lat/lon), sorted by id."""
+    """Every building with its GeoJSON geometry ([lon, lat]), entrances (lat/lon) and indoor floors, sorted by id.
+
+    `floors` is the sorted distinct floors of the building's indoor nodes; [] means no indoor map.
+    """
+    indoor_floors = {}
+    for n in campus.nodes.values():
+        if n.indoor and n.building_id is not None:
+            indoor_floors.setdefault(n.building_id, set()).add(n.floor)
     out = []
     for bid in sorted(campus.buildings):
         b = campus.buildings[bid]
         entrances = []
         for nid in campus.entrances_for(bid):
             n = campus.nodes[nid]
-            entrances.append({"node_id": nid, "name": poi_name_at(campus, nid), "lat": n.x_or_lat, "lon": n.y_or_lon})
-        out.append({"id": bid, "name": b.name, "geometry": b.geometry, "entrances": entrances})
+            entrances.append({"node_id": nid, "name": poi_name_at(campus, nid), "lat": n.x_or_lat, "lon": n.y_or_lon,
+                              "floor": n.floor, "accessible": n.accessible})
+        out.append({"id": bid, "name": b.name, "geometry": b.geometry, "entrances": entrances,
+                    "floors": sorted(indoor_floors.get(bid, ()))})
     return out
 
 
@@ -74,16 +83,25 @@ def create_app(data_root=None):
 
     @app.get("/campuses/{campus_id}/search")
     def search_campus(campus_id: str = Depends(get_campus), q: str = Query(),
-                      limit: int = Query(DEFAULT_SEARCH_LIMIT, ge=1, le=MAX_SEARCH_LIMIT)):
-        """[{kind, id, name, building_id}]: route to a building by id, or to a POI by id."""
-        return [asdict(r) for r in search(campuses[campus_id], q, limit)]
+                      limit: int = Query(DEFAULT_SEARCH_LIMIT, ge=1, le=MAX_SEARCH_LIMIT),
+                      building: str | None = None):
+        """[{kind, id, name, building_id, floor}]: route to a building by id, or to a POI by id.
+
+        Without `building`: buildings and outdoor POIs. With it: only POIs in that building (rooms, doors).
+        """
+        campus = campuses[campus_id]
+        if building is not None and building not in campus.buildings:
+            raise HTTPException(404, f"unknown building {building!r}")
+        return [asdict(r) for r in search(campus, q, limit, building=building)]
 
     @app.get("/campuses/{campus_id}/route")
     def route_campus(campus_id: str = Depends(get_campus),
-                     lat: float = Query(ge=-90, le=90), lon: float = Query(ge=-180, le=180),
+                     lat: float | None = Query(None, ge=-90, le=90),
+                     lon: float | None = Query(None, ge=-180, le=180),
+                     from_poi: str | None = None, from_entrance: str | None = None,
                      to_building: str | None = None, to_poi: str | None = None,
                      to_entrance: str | None = None, mode: str = "walk"):
-        """GPS point -> a building's best entrance, a POI, or one entrance (by node_id).
+        """GPS point, POI or entrance -> a building's best entrance, a POI, or one entrance (by node_id).
 
         "No route" is a normal 200 answer.
 
@@ -91,10 +109,18 @@ def create_app(data_root=None):
         so anything route() raises after these checks is a bug and surfaces as 500.
         """
         campus = campuses[campus_id]
+        if (lat is None) != (lon is None):
+            raise HTTPException(400, "give both lat and lon")
+        if sum(s is not None for s in (lat, from_poi, from_entrance)) != 1:
+            raise HTTPException(400, "give exactly one start: lat/lon, from_poi, from_entrance")
         if sum(t is not None for t in (to_building, to_poi, to_entrance)) != 1:
             raise HTTPException(400, "give exactly one of to_building, to_poi, to_entrance")
         if mode not in MODES:
             raise HTTPException(400, f"unknown mode {mode!r}; expected one of {sorted(MODES)}")
+        if from_poi is not None and from_poi not in campus.pois:
+            raise HTTPException(404, f"unknown poi {from_poi!r}")
+        if from_entrance is not None and not is_entrance(campus, from_entrance):
+            raise HTTPException(404, f"unknown entrance {from_entrance!r}")
         if to_building is not None and to_building not in campus.buildings:
             raise HTTPException(404, f"unknown building {to_building!r}")
         if to_poi is not None and to_poi not in campus.pois:
@@ -102,7 +128,7 @@ def create_app(data_root=None):
         if to_entrance is not None and not is_entrance(campus, to_entrance):
             raise HTTPException(404, f"unknown entrance {to_entrance!r}")  # also a node that isn't an entrance
 
-        result = route(campus, lat, lon, to_building=to_building, to_poi=to_poi,
+        result = route(campus, lat, lon, from_poi=from_poi, from_entrance=from_entrance, to_building=to_building, to_poi=to_poi,
                        to_entrance=to_entrance, mode=mode)
         if isinstance(result, NoRoute):
             d = result.distance_m  # inf (no usable edge at all) isn't valid JSON, so it becomes null
@@ -114,10 +140,14 @@ def create_app(data_root=None):
             "distance_m": result.distance_m,
             "approach_m": result.approach_m,
             "duration_s": result.duration_s,
-            "entrance_id": result.entrance_id,
+            "end_id": result.end_id,
+            "entrance_id": result.entrance_id,  # the door used; null if the path has none (room -> same room)
             "entrance_name": result.entrance_name,
             "building_id": result.building_id,
             "flags": [asdict(f) for f in result.flags],  # index i = segment coords[i] -> coords[i + 1]
+            "floors": list(result.floors),  # parallel to coords
+            "indoor": list(result.indoor),  # parallel to coords
+            "floor_changes": [asdict(c) for c in result.floor_changes],  # same index convention as flags
         }
 
     # Mounted last: routes match in order, so /campuses/... is always the API, never a file.

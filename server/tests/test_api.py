@@ -100,9 +100,12 @@ def test_buildings_with_entrances(data_root, tiny_campus):
     assert bA["name"] == "Building A"
     assert bA["geometry"] == fixture_geometry(tiny_campus, "bA")
     assert bA["entrances"] == [
-        {"node_id": "eA1", "name": "Building A (South Entrance)", "lat": 42.0009, "lon": -71.0005},
-        {"node_id": "eA2", "name": "Building A (North Entrance)", "lat": 42.0021, "lon": -71.0005},
+        {"node_id": "eA1", "name": "Building A (South Entrance)", "lat": 42.0009, "lon": -71.0005,
+         "floor": 0, "accessible": True},
+        {"node_id": "eA2", "name": "Building A (North Entrance)", "lat": 42.0021, "lon": -71.0005,
+         "floor": 0, "accessible": True},
     ]
+    assert bA["floors"] == []  # no indoor nodes: no indoor map
 
 
 def test_buildings_without_entrances(data_root):
@@ -147,8 +150,8 @@ def test_search_blank_q_gives_empty_list(data_root, q):
 def test_search_results_pass_through(data_root):
     res = get(data_root, "/campuses/tiny-campus/search?q=building")
     assert res.json() == [
-        {"kind": "building", "id": "bA", "name": "Building A", "building_id": "bA"},
-        {"kind": "building", "id": "bB", "name": "Building B", "building_id": "bB"},
+        {"kind": "building", "id": "bA", "name": "Building A", "building_id": "bA", "floor": None},
+        {"kind": "building", "id": "bB", "name": "Building B", "building_id": "bB", "floor": None},
     ]
 
 
@@ -189,8 +192,13 @@ def test_route_walk_to_building_picks_best_entrance(data_root):
     assert body["approach_m"] == pytest.approx(0, abs=1e-6)
     assert body["duration_s"] == pytest.approx(44.5 / 1.4)
     assert body["flags"] == []
-    assert set(body) == {"status", "coords", "distance_m", "approach_m", "duration_s",
-                         "entrance_id", "entrance_name", "building_id", "flags"}
+    assert body["end_id"] == "eA1"
+    assert body["floors"] == [0, 0]
+    assert body["indoor"] == [False, False]
+    assert body["floor_changes"] == []
+    assert set(body) == {"status", "coords", "distance_m", "approach_m", "duration_s", "end_id",
+                         "entrance_id", "entrance_name", "building_id", "flags",
+                         "floors", "indoor", "floor_changes"}
 
 
 def test_route_to_poi_walk_takes_steps_wheelchair_avoids_them(data_root):
@@ -262,6 +270,11 @@ def test_route_unknown_campus_404(data_root):
     f"{AT_W1}&to_building=bA&to_poi=poi_eA1&to_entrance=eA1",
     f"{AT_W1}&to_building=bA&mode=distance",     # "distance" is the cost fn, not a mode
     f"{AT_W1}&to_building=bA&mode=fly",
+    "to_building=bA",                            # no start
+    "lon=-71.0005&to_building=bA",               # lon without lat
+    "lat=42.0005&to_building=bA",                # lat without lon
+    f"{AT_W1}&from_poi=poi_eA1&to_building=bA",  # two starts
+    "from_poi=poi_eA1&from_entrance=eA1&to_building=bA",
 ])
 def test_route_bad_request_400(data_root, params):
     res = get(data_root, route_url(params))
@@ -270,7 +283,6 @@ def test_route_bad_request_400(data_root, params):
 
 
 @pytest.mark.parametrize("params", [
-    "lon=-71.0005&to_building=bA",           # missing lat
     "lat=91&lon=-71.0005&to_building=bA",
     "lat=42&lon=-181&to_building=bA",
     "lat=42&lon=abc&to_building=bA",
@@ -278,6 +290,102 @@ def test_route_bad_request_400(data_root, params):
 ])
 def test_route_bad_coords_422(data_root, params):
     assert get(data_root, route_url(params)).status_code == 422
+
+
+@pytest.mark.parametrize("params, detail", [
+    ("from_poi=nope&to_building=bA", "unknown poi 'nope'"),
+    ("from_entrance=nope&to_building=bA", "unknown entrance 'nope'"),
+    ("from_entrance=w1&to_building=bA", "unknown entrance 'w1'"),   # a node, but not an entrance
+])
+def test_route_unknown_start_404(data_root, params, detail):
+    res = get(data_root, route_url(params))
+    assert res.status_code == 404
+    assert res.json() == {"detail": detail}
+
+
+# --- indoor (tiny-indoor) ---
+
+SOUTH = "lat=42.30000&lon=-71.10010"   # south of hq, nearest the o1-e1 side
+
+
+@pytest.fixture
+def indoor_root(tmp_path, tiny_indoor):
+    """A data folder holding only tiny-indoor."""
+    copy_campus(tiny_indoor, tmp_path, "tiny-indoor")
+    return tmp_path
+
+
+def indoor_url(params):
+    return route_url(params, campus="tiny-indoor")
+
+
+def test_buildings_indoor_floors_and_door_details(indoor_root):
+    (hq,) = get(indoor_root, "/campuses/tiny-indoor/buildings").json()
+    assert hq["floors"] == [0, 1]
+    assert {e["node_id"]: (e["floor"], e["accessible"]) for e in hq["entrances"]} == {
+        "e1": (0, True), "e2": (1, False)}
+
+
+def test_route_to_room_has_floors(indoor_root):
+    body = get(indoor_root, indoor_url(f"{SOUTH}&to_poi=poi_r101")).json()
+    assert body["status"] == "ok"
+    assert body["end_id"] == "r101"
+    assert body["entrance_id"] == "e1"
+    assert body["entrance_name"] == "Headquarters (South Entrance)"
+    assert len(body["floors"]) == len(body["indoor"]) == len(body["coords"])
+    assert body["floors"][0] == 0 and body["floors"][-1] == 1
+    assert body["indoor"][0] is False and body["indoor"][-1] is True
+    (change,) = body["floor_changes"]
+    assert change["from_floor"] == 0 and change["to_floor"] == 1
+    assert change["edge_type"] in {"steps", "elevator"}
+
+
+def test_route_to_room_wheelchair_takes_elevator(indoor_root):
+    body = get(indoor_root, indoor_url(f"{SOUTH}&to_poi=poi_r101&mode=wheelchair")).json()
+    assert body["status"] == "ok"
+    assert [c["edge_type"] for c in body["floor_changes"]] == ["elevator"]
+    assert body["flags"] == []
+
+
+def test_route_from_poi_start(indoor_root):
+    body = get(indoor_root, indoor_url("from_poi=poi_r101&to_entrance=e1")).json()
+    assert body["status"] == "ok"
+    assert body["approach_m"] == 0
+    assert body["floors"][0] == 1 and body["indoor"][0] is True
+    assert body["end_id"] == body["entrance_id"] == "e1"
+
+
+def test_route_from_entrance_start(indoor_root):
+    body = get(indoor_root, indoor_url("from_entrance=e1&to_poi=poi_r101")).json()
+    assert body["status"] == "ok"
+    assert body["coords"][0] == [42.3001, -71.1001]
+    assert body["end_id"] == "r101"
+
+
+def test_route_room_to_same_room_has_no_entrance(indoor_root):
+    body = get(indoor_root, indoor_url("from_poi=poi_r101&to_poi=poi_r101")).json()
+    assert body["status"] == "ok"
+    assert body["entrance_id"] is None and body["entrance_name"] is None
+    assert body["coords"] == [[42.30027, -71.10003]]
+    assert body["floor_changes"] == []
+
+
+def test_search_outdoor_leaves_out_rooms(indoor_root):
+    res = get(indoor_root, "/campuses/tiny-indoor/search?q=room")
+    assert res.json() == []
+
+
+def test_search_in_building_finds_rooms_and_doors(indoor_root):
+    res = get(indoor_root, "/campuses/tiny-indoor/search?q=room&building=hq")
+    assert res.json() == [{"kind": "poi", "id": "poi_r101", "name": "Room 101", "building_id": "hq", "floor": 1}]
+    doors = get(indoor_root, "/campuses/tiny-indoor/search?q=entrance&building=hq").json()
+    assert [r["id"] for r in doors] == ["poi_e2", "poi_e1"]   # by name: North before South
+
+
+def test_search_unknown_building_404(indoor_root):
+    res = get(indoor_root, "/campuses/tiny-indoor/search?q=room&building=nope")
+    assert res.status_code == 404
+    assert res.json() == {"detail": "unknown building 'nope'"}
 
 
 # --- frontend ---
