@@ -117,11 +117,13 @@ def _name_tier(name, needle):
 
 @dataclass(frozen=True)
 class Snap:
+    """Where a route starts: a GPS point snapped onto the graph, or a picked node (approach 0)."""
     node_id: str          # START, or an existing node if the point snapped onto an endpoint
     lat: float            # the snapped point (where the route's polyline starts)
     lon: float
     distance_m: float     # GPS point -> snapped point
     adjacency: Mapping    # campus.adjacency, or an overlay that also contains START
+    floor: int            # the start's floor; for START, the floor of the nearer edge end
 
 
 @dataclass(frozen=True)
@@ -133,8 +135,10 @@ class TooFar:
 def snap(campus, lat, lon, cost_fn=None, max_m=SNAP_MAX_M):
     """Snap a GPS point to the nearest point on an edge, as Snap or TooFar.
 
-    With cost_fn, only edges passable (from either end) in that mode count, so a
-    wheelchair start never lands on a steps edge. Mid-edge, every parallel edge
+    Only outdoor edges count (both ends indoor=False): GPS has no floor and is unreliable
+    indoors, so an indoor snap could pick the wrong floor. Indoor starts are picked nodes
+    instead (route's from_poi / from_entrance). With cost_fn, only edges passable (from
+    either end) in that mode count, so a wheelchair start never lands on a steps edge. Mid-edge, every parallel edge
     between the chosen pair is split at that point into two halves around a
     temporary START node, keeping edge_type and accessible so cost functions still
     apply. Invalid lat/lon raises ValueError.
@@ -160,7 +164,7 @@ def snap(campus, lat, lon, cost_fn=None, max_m=SNAP_MAX_M):
                 continue
             u, v = sorted((n1, n2))
             a, b = campus.nodes[u], campus.nodes[v]
-            if a.coord_system != "latlon" or b.coord_system != "latlon":
+            if a.coord_system != "latlon" or b.coord_system != "latlon" or a.indoor or b.indoor:
                 continue
             (ax, ay), (bx, by) = to_xy(a), to_xy(b)
             t, q = _project_origin(ax, ay, bx, by)
@@ -180,9 +184,10 @@ def snap(campus, lat, lon, cost_fn=None, max_m=SNAP_MAX_M):
         if math.hypot(qx - nx, qy - ny) <= ENDPOINT_EPS_M:
             n = campus.nodes[node_id]
             return Snap(node_id, n.x_or_lat, n.y_or_lon, haversine_m(lat, lon, n.x_or_lat, n.y_or_lon),
-                        campus.adjacency)
+                        campus.adjacency, n.floor)
 
-    return Snap(START, q_lat, q_lon, dist, _overlay(campus.adjacency, u, v, t))
+    nearer = campus.nodes[u if t <= 0.5 else v]
+    return Snap(START, q_lat, q_lon, dist, _overlay(campus.adjacency, u, v, t), nearer.floor)
 
 
 def _project_origin(ax, ay, bx, by):
@@ -236,17 +241,30 @@ class Flag:
 
 
 @dataclass(frozen=True)
+class FloorChange:
+    """A route segment whose ends are on different floors (stairs, elevator, ramp)."""
+    index: int                 # segment coords[index] -> coords[index + 1], i.e. Route.edges[index]
+    from_floor: int
+    to_floor: int
+    edge_type: str | None      # copied from the edge ("steps", "elevator"); for wording later
+
+
+@dataclass(frozen=True)
 class Route:
-    coords: tuple[tuple[float, float], ...]  # (lat, lon) polyline: the snapped point, then each node
+    coords: tuple[tuple[float, float], ...]  # (lat, lon) polyline: the start (snapped point or node), then each node
     distance_m: float          # along the graph: sum of the meters edges taken (floor changes excluded)
-    approach_m: float          # GPS point -> snapped point, off the graph (not in coords)
+    approach_m: float          # GPS point -> snapped point, off the graph (not in coords); 0 for a node start
     duration_s: float          # (approach_m + distance_m) / the mode's speed + seconds edges
-    entrance_id: str           # node reached
-    entrance_name: str | None  # name of a POI on that node (first by poi_id), if any
+    end_id: str                # node reached
+    entrance_id: str | None    # the door used: the last entrance on the path (= end_id when routing to a door)
+    entrance_name: str | None  # name of a POI on that door (first by poi_id), if any
     building_id: str | None    # the reached node's building
     nodes: tuple[str, ...]     # node ids, parallel to coords; may start with START (not in campus.nodes)
     edges: tuple[Edge, ...]    # edge taken between each pair (len(nodes) - 1); START's is a half-edge
     flags: tuple[Flag, ...]    # segments not known to be accessible, by index; always () for wheelchair
+    floors: tuple[int, ...]    # floor per coord (parallel to coords)
+    indoor: tuple[bool, ...]   # indoor per coord (parallel to coords); floor 0 exists outside and in
+    floor_changes: tuple[FloorChange, ...]  # segments whose ends are on different floors, by index
 
 
 @dataclass(frozen=True)
@@ -261,13 +279,21 @@ def is_entrance(campus, node_id):
     return node is not None and node.type == "entrance"
 
 
-def route(campus, lat, lon, *, to_building=None, to_poi=None, to_entrance=None, mode="walk"):
-    """Route from a GPS point to a building (its best entrance), a POI, or one specific entrance.
+def route(campus, lat=None, lon=None, *, from_poi=None, from_entrance=None,
+          to_building=None, to_poi=None, to_entrance=None, mode="walk"):
+    """Route from a start to a building (its best entrance), a POI, or one specific entrance.
 
-    Exactly one of to_building / to_poi / to_entrance (an entrance's node_id). Caller bugs raise:
-    not exactly one target or unknown mode -> ValueError; unknown building or POI, or a
-    to_entrance that isn't an entrance node -> KeyError; bad lat/lon -> ValueError.
+    Start: a GPS point (lat and lon, snapped onto an outdoor edge), a POI (its node), or an
+    entrance's node_id. Exactly one start and exactly one of to_building / to_poi / to_entrance.
+    Caller bugs raise: not exactly one start or target, lat without lon, or unknown mode ->
+    ValueError; unknown building or POI, or a from_/to_entrance that isn't an entrance node ->
+    KeyError; bad lat/lon -> ValueError.
     """
+    gps = lat is not None or lon is not None
+    if gps and (lat is None or lon is None):
+        raise ValueError("give both lat and lon")
+    if gps + (from_poi is not None) + (from_entrance is not None) != 1:
+        raise ValueError("give exactly one start: lat/lon, from_poi, from_entrance")
     if sum(t is not None for t in (to_building, to_poi, to_entrance)) != 1:
         raise ValueError("give exactly one of to_building, to_poi, to_entrance")
     if mode not in MODES:
@@ -277,16 +303,16 @@ def route(campus, lat, lon, *, to_building=None, to_poi=None, to_entrance=None, 
 
     if to_building is not None:
         targets = campus.entrances_for(to_building)
-        if not targets:
-            return NoRoute("no_entrances")
     elif to_poi is not None:
         targets = (campus.pois[to_poi].node_id,)
     else:
-        if not is_entrance(campus, to_entrance):
-            raise KeyError(f"unknown entrance {to_entrance!r}")
-        targets = (to_entrance,)
+        targets = (_entrance(campus, to_entrance),)
+    start_node = None if gps else (
+        campus.pois[from_poi].node_id if from_poi is not None else _entrance(campus, from_entrance))
+    if not targets:
+        return NoRoute("no_entrances")
 
-    s = snap(campus, lat, lon, cost_fn)
+    s = _start(campus, lat, lon, start_node, cost_fn)
     if isinstance(s, TooFar):
         return NoRoute("too_far", s.distance_m)
 
@@ -297,19 +323,63 @@ def route(campus, lat, lon, *, to_building=None, to_poi=None, to_entrance=None, 
     coords = ((s.lat, s.lon),) + tuple(
         (campus.nodes[n].x_or_lat, campus.nodes[n].y_or_lon) for n in path.nodes[1:])
     meters, secs = _edge_totals(path.edges)
+    floors, indoor, floor_changes = _floor_info(campus, path, s)
     end = campus.nodes[path.nodes[-1]]
+    door = next((n for n in reversed(path.nodes) if is_entrance(campus, n)), None)
     return Route(
         coords=coords,
         distance_m=meters,
         approach_m=s.distance_m,
         duration_s=(s.distance_m + meters) / speed + secs,
-        entrance_id=end.id,
-        entrance_name=poi_name_at(campus, end.id),
+        end_id=end.id,
+        entrance_id=door,
+        entrance_name=poi_name_at(campus, door) if door is not None else None,
         building_id=end.building_id,
         nodes=path.nodes,
         edges=path.edges,
         flags=flags_for(path.edges),
+        floors=floors,
+        indoor=indoor,
+        floor_changes=floor_changes,
     )
+
+
+def _entrance(campus, node_id):
+    """node_id if it's an entrance node, else KeyError (from_entrance / to_entrance)."""
+    if not is_entrance(campus, node_id):
+        raise KeyError(f"unknown entrance {node_id!r}")
+    return node_id
+
+
+def _start(campus, lat, lon, node_id, cost_fn):
+    """Where the route starts: the picked node as is, or the GPS point snapped (Snap | TooFar).
+
+    A picked node (from_poi / from_entrance) needs no snapping, may be indoors, and has no
+    approach. A GPS point snaps onto an outdoor edge passable in the mode.
+    """
+    if node_id is None:
+        return snap(campus, lat, lon, cost_fn)
+    n = campus.nodes[node_id]
+    return Snap(node_id, n.x_or_lat, n.y_or_lon, 0.0, campus.adjacency, n.floor)
+
+
+def _floor_info(campus, path, start):
+    """(floors, indoor) per path node, and a FloorChange per edge whose ends' floors differ.
+
+    START isn't in campus.nodes: its floor comes from the Snap, and it's always outdoors
+    (snapping only uses outdoor edges).
+    """
+    floors, indoor = [], []
+    for n in path.nodes:
+        if n == START:
+            floors.append(start.floor)
+            indoor.append(False)
+        else:
+            floors.append(campus.nodes[n].floor)
+            indoor.append(campus.nodes[n].indoor)
+    changes = tuple(FloorChange(i, floors[i], floors[i + 1], e.edge_type)
+                    for i, e in enumerate(path.edges) if floors[i] != floors[i + 1])
+    return tuple(floors), tuple(indoor), changes
 
 
 def flags_for(edges):

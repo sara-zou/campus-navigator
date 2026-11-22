@@ -4,8 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import INDOOR_FIXTURE
 from loader import POI, Building, load_campus
-from query import START, Flag, NoRoute, Route, SearchResult, Snap, TooFar, route, search, snap
+from query import START, Flag, FloorChange, NoRoute, Route, SearchResult, Snap, TooFar, route, search, snap
 from routing import IMPASSABLE, NoPath, shortest_path, walk, wheelchair
 
 WALK = walk({}, 1.0)  # speed 1: path costs in seconds equal meters
@@ -205,7 +206,7 @@ def test_route_from_snap(campus):
 
 def test_point_on_node_uses_that_node(campus):
     s = snap(campus, 42.0005, -71.0015)  # exactly w2
-    assert s == Snap("w2", 42.0005, -71.0015, 0.0, campus.adjacency)
+    assert s == Snap("w2", 42.0005, -71.0015, 0.0, campus.adjacency, 0)
 
 
 def test_projection_past_the_end_clamps_to_endpoint(campus):
@@ -468,3 +469,118 @@ def test_real_campus_door_rule_cuts_nothing_off():
     for building_id, entrances in campus.entrances_by_building.items():
         assert (shortest_path(campus.adjacency, start, entrances, with_doors)
                 == shortest_path(campus.adjacency, start, entrances, edges_only)), building_id
+
+
+# --- indoor (tiny-indoor fixture) ---
+# hq: south door e1 (floor 0, accessible) - c0 - stairs s0-s1 (15 s) / elevator l0-l1 (35 s) - c1 - r101 (floor 1);
+# north door e2 (floor 1, accessible=False) - c1. Outdoor sidewalk o1 - o2 - o3 - o4; o1-e1 and o4-e2 connectors.
+
+SOUTH = (42.30000, -71.10010)   # ~5.6 m south of o1; snaps onto o1
+NORTH = (42.30040, -71.10010)   # ~5.6 m north of o4; snaps onto o4
+
+
+@pytest.fixture
+def indoor(tiny_indoor):
+    return load_campus(tiny_indoor)
+
+
+def test_gps_inside_building_snaps_outdoors(indoor):
+    at_c0 = (42.30015, -71.10010)  # on the floor-0 corridor: nearest outdoor edge is the o1-e1 connector
+    s = snap(indoor, *at_c0)
+    assert s.node_id == "e1"       # the door end of the connector, never a corridor
+    assert not indoor.nodes[s.node_id].indoor
+
+
+def test_gps_with_only_indoor_edges_nearby_is_too_far(broken_campus):
+    # drop every outdoor edge: an indoor-only graph gives GPS nothing to snap onto
+    outdoor = {"o1", "o2", "o3", "o4"}
+    campus = load_campus(broken_campus(
+        "edges.csv", lambda rows: [r for r in rows if not ({r[0], r[1]} & outdoor)], fixture=INDOOR_FIXTURE))
+    assert snap(campus, 42.30015, -71.10010) == TooFar(math.inf)
+
+
+def test_walk_to_room_takes_the_stairs(indoor):
+    r = route(indoor, *SOUTH, to_poi="poi_r101")
+    assert r.nodes == ("o1", "e1", "c0", "s0", "s1", "c1", "r101")
+    assert r.floors == (0, 0, 0, 0, 1, 1, 1)
+    assert r.indoor == (False, False, True, True, True, True, True)
+    assert r.floor_changes == (FloorChange(3, 0, 1, "steps"),)
+    assert r.flags == (Flag(3, False, "steps"),)
+    assert r.distance_m == pytest.approx(5.6 + 5.6 + 6.9 + 6.9 + 6.2)  # the stairs add no meters
+    assert r.duration_s == pytest.approx((r.approach_m + r.distance_m) / 1.4 + 15)
+    assert (r.end_id, r.entrance_id, r.entrance_name, r.building_id) == (
+        "r101", "e1", "Headquarters (South Entrance)", "hq")
+
+
+def test_wheelchair_to_room_takes_the_elevator(indoor):
+    r = route(indoor, *SOUTH, to_poi="poi_r101", mode="wheelchair")
+    assert r.nodes == ("o1", "e1", "c0", "l0", "l1", "c1", "r101")
+    assert r.floor_changes == (FloorChange(3, 0, 1, "elevator"),)
+    assert r.flags == ()
+    assert r.duration_s == pytest.approx((r.approach_m + r.distance_m) / 1.1 + 35)
+
+
+def test_walk_from_north_enters_on_floor_1(indoor):
+    # e2 is on floor 1 (up the hill), so the door itself is where the floor changes: no stairs
+    r = route(indoor, *NORTH, to_poi="poi_r101")
+    assert r.nodes == ("o4", "e2", "c1", "r101")
+    assert r.floor_changes == (FloorChange(0, 0, 1, "connector"),)
+    assert r.entrance_id == "e2" and r.flags == ()
+
+
+def test_wheelchair_from_north_goes_around_the_stepped_door(indoor):
+    r = route(indoor, *NORTH, to_poi="poi_r101", mode="wheelchair")
+    assert r.nodes == ("o4", "o3", "o2", "o1", "e1", "c0", "l0", "l1", "c1", "r101")
+    assert r.entrance_id == "e1"
+
+
+def test_start_from_room(indoor):
+    r = route(indoor, from_poi="poi_r101", to_entrance="e2")
+    assert r.nodes == ("r101", "c1", "e2")
+    assert r.coords[0] == (indoor.nodes["r101"].x_or_lat, indoor.nodes["r101"].y_or_lon)
+    assert r.approach_m == 0 and r.floors == (1, 1, 1) and r.indoor == (True, True, False)
+
+
+def test_start_from_room_wheelchair_to_stepped_door_is_no_path(indoor):
+    assert route(indoor, from_poi="poi_r101", to_entrance="e2", mode="wheelchair") == NoRoute("no_path")
+
+
+def test_start_from_room_to_building_uses_the_nearest_door(indoor):
+    assert route(indoor, from_poi="poi_r101", to_building="hq").end_id == "e2"
+    assert route(indoor, from_poi="poi_r101", to_building="hq", mode="wheelchair").end_id == "e1"
+
+
+def test_start_from_entrance(indoor):
+    r = route(indoor, from_entrance="e1", to_poi="poi_r101")
+    assert r.nodes == ("e1", "c0", "s0", "s1", "c1", "r101")
+    assert r.approach_m == 0 and r.entrance_id == "e1"
+
+
+def test_start_from_blocked_entrance_wheelchair_is_no_path(indoor):
+    assert route(indoor, from_entrance="e2", to_poi="poi_r101", mode="wheelchair") == NoRoute("no_path")
+
+
+def test_room_to_same_room_is_zero_length(indoor):
+    r = route(indoor, from_poi="poi_r101", to_poi="poi_r101")
+    assert r.nodes == ("r101",) and r.distance_m == 0 and r.duration_s == 0
+    assert r.entrance_id is None and r.entrance_name is None  # no door on the path
+    assert r.floors == (1,) and r.floor_changes == ()
+
+
+@pytest.mark.parametrize("args, kwargs, err", [
+    ((), {"to_building": "hq"}, ValueError),                                       # no start
+    ((42.3,), {"to_building": "hq"}, ValueError),                                  # lat without lon
+    (SOUTH, {"from_poi": "poi_r101", "to_building": "hq"}, ValueError),            # two starts
+    ((), {"from_poi": "poi_r101", "from_entrance": "e1", "to_building": "hq"}, ValueError),
+    ((), {"from_poi": "nope", "to_building": "hq"}, KeyError),
+    ((), {"from_entrance": "c0", "to_building": "hq"}, KeyError),                  # a node, not an entrance
+])
+def test_start_caller_bugs_raise(indoor, args, kwargs, err):
+    with pytest.raises(err):
+        route(indoor, *args, **kwargs)
+
+
+def test_outdoor_routes_have_flat_floor_info(campus):
+    r = route(campus, *AT_W3, to_building="bA")
+    assert set(r.floors) == {0} and not any(r.indoor) and r.floor_changes == ()
+    assert r.entrance_id == r.end_id == "eA2"
