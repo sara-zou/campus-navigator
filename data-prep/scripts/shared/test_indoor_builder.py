@@ -2,7 +2,7 @@
 import pytest
 
 from indoor_builder import (ELEVATOR_S_PER_FLOOR, ELEVATOR_WAIT_S, NODE_COLS, EDGE_COLS, POI_COLS,
-                            STAIRS_S_PER_FLIGHT, Building, Door, build_interior, haversine_m,
+                            STAIRS_S_PER_FLIGHT, Building, Door, build_interior, footprint, haversine_m,
                             local_to_latlon, room_name)
 
 ORIGIN = (42.305, -71.093)
@@ -135,6 +135,20 @@ def test_room_poi_floor_matches_its_node():
     nodes, _, pois = build_interior(bldg(floors=(-1, 0, 2)))
     fl = floor_of(nodes)
     assert all(p["floor"] == fl[p["node_id"]] for p in pois)
+
+
+def test_footprint_contains_every_interior_node():
+    b = bldg(bearing_deg=37)
+    ring = footprint(b)["coordinates"][0]
+    assert ring[0] == ring[-1] and len(ring) == 5
+    nodes, _, _ = build_interior(b)
+    # in the local frame: corridor runs 0..length, rooms at ±room_offset, margin 3 beyond both
+    lons, lats = zip(*ring)
+    assert all(min(lats) <= n["x_or_lat"] <= max(lats) and min(lons) <= n["y_or_lon"] <= max(lons) for n in nodes)
+    # the rectangle is (length + 6) by (2 * (room_offset + 3)) metres
+    (lon0, lat0), (lon1, lat1), (lon2, lat2) = ring[:3]
+    assert haversine_m(lat0, lon0, lat1, lon1) == pytest.approx(b.length_m + 6, abs=0.05)
+    assert haversine_m(lat1, lon1, lat2, lon2) == pytest.approx(2 * (b.room_offset_m + 3), abs=0.05)
 
 
 @pytest.mark.parametrize("kw", [

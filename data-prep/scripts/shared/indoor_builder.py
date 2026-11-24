@@ -124,6 +124,16 @@ def build_interior(b):
     return nodes, edges, pois
 
 
+def footprint(b, margin_m=3):
+    """GeoJSON Polygon ([lon, lat]) around the corridor and its rooms, margin_m beyond them."""
+    half = b.room_offset_m + margin_m
+    corners = [(-margin_m, -half), (b.length_m + margin_m, -half),
+               (b.length_m + margin_m, half), (-margin_m, half)]
+    ring = [local_to_latlon(b.origin, b.bearing_deg, a, s) for a, s in corners]
+    ring.append(ring[0])
+    return {"type": "Polygon", "coordinates": [[[lon, lat] for lat, lon in ring]]}
+
+
 def _check(b):
     if not b.floors or len(set(b.floors)) != len(b.floors):
         raise ValueError(f"{b.building_id}: floors must be non-empty and distinct")
