@@ -3,6 +3,7 @@
 Each test pins one demo case the generator is meant to provide, so a regenerated
 campus that loses one fails here.
 """
+import csv
 import math
 from pathlib import Path
 
@@ -110,3 +111,68 @@ def test_demo_is_first_campus():
     # the frontend uses the first campus from /campuses until step 6's picker
     ids = [c["id"] for c in TestClient(create_app(DATA)).get("/campuses").json()]
     assert ids[0] == "demo-university"
+
+
+# --- northeastern-boston-demo: real NEU + mock interiors (data-prep/scripts/northeastern-boston-demo/) ---
+
+REAL_NEU = DATA / "northeastern-boston"
+NEU_DEMO = DATA / "northeastern-boston-demo"
+MOCK_BUILDINGS = {"sl": [-1, 0, 1, 2, 3], "isec": [0, 1, 2, 3], "exp": [0, 1, 2, 3, 4]}
+
+
+def csv_rows(path):
+    with path.open(newline="") as f:
+        return list(csv.DictReader(f))
+
+
+@pytest.fixture(scope="module")
+def neu_demo():
+    return load_campus(NEU_DEMO)
+
+
+@pytest.mark.parametrize("file", ["buildings.csv", "edges.csv", "pois.csv"])
+def test_neu_demo_keeps_every_real_row(file):
+    # fails when the real data changed and the demo wasn't regenerated
+    demo = {tuple(r.items()) for r in csv_rows(NEU_DEMO / file)}
+    assert all(tuple(r.items()) in demo for r in csv_rows(REAL_NEU / file))
+
+
+def test_neu_demo_keeps_every_real_node():
+    demo = {r["node_id"]: r for r in csv_rows(NEU_DEMO / "nodes.csv")}
+    for r in csv_rows(REAL_NEU / "nodes.csv"):
+        d = demo[r["node_id"]]
+        assert d["campus_id"] == "northeastern-boston-demo" and d["indoor"] == "False"
+        assert {k: v for k, v in d.items() if k not in ("campus_id", "indoor")} == \
+               {k: v for k, v in r.items() if k != "campus_id"}
+
+
+def test_neu_demo_mock_pois_are_labelled(neu_demo):
+    real_ids = {r["poi_id"] for r in csv_rows(REAL_NEU / "pois.csv")}
+    mock = [p for p in neu_demo.pois.values() if p.id not in real_ids]
+    assert mock and all(p.notes == "Mock indoor data" and p.building_id in MOCK_BUILDINGS for p in mock)
+
+
+def test_neu_demo_basement_room_through_a_real_door(neu_demo):
+    door = neu_demo.nodes[neu_demo.entrances_for("sl")[0]]
+    walk = route(neu_demo, door.x_or_lat, door.y_or_lon, to_poi="poi-sl-b1-r1")
+    chair = route(neu_demo, door.x_or_lat, door.y_or_lon, to_poi="poi-sl-b1-r1", mode="wheelchair")
+    assert walk.entrance_id in neu_demo.entrances_for("sl")        # a real entrance node
+    assert walk.end_id == chair.end_id == "sl-b1-r1"
+    assert vertical(walk) == ["steps"] and vertical(chair) == ["elevator"]
+
+
+def test_neu_demo_top_floor_room(neu_demo):
+    door = neu_demo.nodes[neu_demo.entrances_for("exp")[0]]
+    r = route(neu_demo, door.x_or_lat, door.y_or_lon, to_poi="poi-exp-4-r1", mode="wheelchair")
+    assert r.floors[-1] == 4 and vertical(r) == ["elevator"]
+
+
+def test_neu_demo_search(neu_demo):
+    assert [r.id for r in search(neu_demo, "isec")] == ["isec"]          # door alias still folds
+    assert search(neu_demo, "room 101") == ()
+    assert [r.name for r in search(neu_demo, "room 101", building="isec")] == ["Room 101"]
+
+
+def test_neu_demo_api_floors_only_on_mock_buildings():
+    body = TestClient(create_app(DATA)).get("/campuses/northeastern-boston-demo/buildings").json()
+    assert {b["id"]: b["floors"] for b in body if b["floors"]} == MOCK_BUILDINGS
