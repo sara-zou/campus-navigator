@@ -49,7 +49,27 @@ html, body {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
-#search-input {
+#campus-select {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid #e5e7eb;
+  border-radius: 6px 6px 0 0;
+  background: #f9fafb;
+  font: inherit;
+  font-size: 16px; /* 16px stops iOS from zooming in on focus */
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#campus-select[hidden] {
+  display: none; /* the display rule above would otherwise override the hidden attribute */
+}
+
+#search-input,
+#room-input {
   width: 100%;
   box-sizing: border-box;
   padding: 10px 12px;
@@ -59,7 +79,19 @@ html, body {
   font-size: 16px; /* 16px stops iOS from zooming in on focus */
 }
 
-#search-results {
+#room-box {
+  border-top: 1px solid #e5e7eb;
+}
+
+#room-box[hidden] {
+  display: none;
+}
+
+#room-input {
+  background: #f9fafb; /* a step "inside" the building box above */
+}
+
+.search-results {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -68,7 +100,7 @@ html, body {
   border-top: 1px solid #e5e7eb;
 }
 
-#search-results button {
+.search-results button {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -81,16 +113,16 @@ html, body {
   cursor: pointer;
 }
 
-#search-results button:hover,
-#search-results button:focus {
+.search-results button:hover,
+.search-results button:focus {
   background: #eff6ff;
 }
 
-#search-results small {
+.search-results small {
   color: #6b7280;
 }
 
-#search-results .no-matches {
+.search-results .no-matches {
   padding: 8px 12px;
   color: #6b7280;
 }
@@ -199,4 +231,87 @@ html, body {
 .entrance-popup-buttons button:first-child {
   background: #6d28d9;
   color: #fff;
+}
+
+/* Floor switcher (bottom right): one button per floor the route visits, top floor first. */
+.floor-switcher {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  background: #fff;
+}
+
+.floor-switcher[hidden] {
+  display: none; /* the display rule above would otherwise override the hidden attribute */
+}
+
+.floor-switcher button {
+  min-width: 40px;
+  min-height: 36px; /* comfortable tap target on phones */
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.floor-switcher button:first-child {
+  border-top: none;
+}
+
+.floor-switcher button[aria-pressed="true"] {
+  background: #6d28d9;
+  color: #fff;
+}
+
+/* Stairs/elevator badge on the route; divIcon with no size, so the badge centres itself on the point. */
+.floor-change {
+  background: none;
+  border: none;
+}
+
+.floor-change span {
+  display: inline-block;
+  transform: translate(-50%, -50%);
+  padding: 2px 6px;
+  border: 2px solid #fff;
+  border-radius: 10px;
+  background: #6d28d9;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+/* Floor view: stairs (S) and elevator (E) badges on the focused building's layout. */
+.layout-core {
+  background: none;
+  border: none;
+}
+
+.layout-core span {
+  display: inline-block;
+  transform: translate(-50%, -50%);
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+
+.layout-stairs span {
+  background: #b45309;
+}
+
+.layout-elevator span {
+  background: #0f766e;
 }

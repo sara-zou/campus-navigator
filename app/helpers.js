@@ -90,3 +90,149 @@ export function describeFlags(flags) {
     ? "Includes a section not known to be wheelchair-accessible"
     : `Includes ${n} sections not known to be wheelchair-accessible`;
 }
+
+// --- floors: a route's floors[i] / indoor[i] are parallel to coords[i] ---
+
+// 0 is G, -1 is B1, 1 is 1. A floors.csv with real names is decided in step 6c.
+export function floorLabel(n) {
+  if (n === 0) return "G";
+  return n < 0 ? `B${-n}` : String(n);
+}
+
+// One entry per segment i (coords[i] -> coords[i + 1]):
+//   {kind: "outdoor"}                 both ends outdoors (always drawn), even if their floors differ (a hill door's connector)
+//   {kind: "indoor", floor}           an indoor end, both ends on `floor` (includes door -> corridor)
+//   {kind: "vertical", from, to}      an indoor end and different floors: stairs, elevator, an indoor ramp
+export function classifySegments(res) {
+  const segments = [];
+  for (let i = 0; i + 1 < res.coords.length; i++) {
+    const [fa, fb] = [res.floors[i], res.floors[i + 1]];
+    if (!res.indoor[i] && !res.indoor[i + 1]) segments.push({ kind: "outdoor" });
+    else if (fa === fb) segments.push({ kind: "indoor", floor: fa });
+    else segments.push({ kind: "vertical", from: fa, to: fb });
+  }
+  return segments;
+}
+
+// Drawn at full strength with `floor` selected; otherwise faded.
+export function segmentVisible(segment, floor) {
+  if (segment.kind === "outdoor") return true;
+  if (segment.kind === "indoor") return segment.floor === floor;
+  return segment.from === floor || segment.to === floor;
+}
+
+// The route as polylines: consecutive segments with the same visibility merge into one run.
+// [{coords: [[lat, lon], ...], visible}], in route order; a one-point route gives [].
+export function routeRuns(res, floor) {
+  const runs = [];
+  classifySegments(res).forEach((seg, i) => {
+    const visible = segmentVisible(seg, floor);
+    const last = runs[runs.length - 1];
+    if (last && last.visible === visible) last.coords.push(res.coords[i + 1]);
+    else runs.push({ coords: [res.coords[i], res.coords[i + 1]], visible });
+  });
+  return runs;
+}
+
+// Floors the route visits indoors, top floor first (the switcher's order); [] for an outdoor route.
+export function routeFloors(res) {
+  const floors = new Set(res.floors.filter((_, i) => res.indoor[i]));
+  return [...floors].sort((a, b) => b - a);
+}
+
+// The floor shown when a route arrives: where its indoor part starts (null if it has none).
+export function defaultFloor(res) {
+  const i = res.indoor.indexOf(true);
+  return i < 0 ? null : res.floors[i];
+}
+
+function verticalKind(change) {
+  const tokens = change.edge_type === null ? [] : change.edge_type.split("+");
+  return tokens.includes("elevator") ? "Elevator" : tokens.includes("steps") ? "Stairs" : null;
+}
+
+// Floor changes that are real vertical moves (stairs, elevator), with a label each. An upper-floor
+// door's outdoor connector also changes floor but isn't one (see the step 4 notes in CLAUDE.md).
+export function verticalMoves(res) {
+  return res.floor_changes
+    .filter((c) => verticalKind(c) !== null)
+    .map((c) => ({
+      ...c,
+      label: `${verticalKind(c)} ${c.to_floor > c.from_floor ? "up" : "down"} to floor ${floorLabel(c.to_floor)}`,
+    }));
+}
+
+// The badge for a move seen from `floor` (one of its two ends): where clicking it takes you.
+// {text: "↑ 2", target: 2}, or null if the move doesn't touch `floor`.
+export function moveBadge(move, floor) {
+  if (floor !== move.from_floor && floor !== move.to_floor) return null;
+  const target = floor === move.from_floor ? move.to_floor : move.from_floor;
+  return { text: `${target > floor ? "↑" : "↓"} ${floorLabel(target)}`, target };
+}
+
+// The result box's floor line, or null for a route that never goes indoors.
+export function describeFloors(res) {
+  if (!res.indoor.includes(true)) return null;
+  const parts = verticalMoves(res).map((m) => m.label);
+  const last = res.coords.length - 1;
+  if (res.indoor[last]) parts.push(`Ends on floor ${floorLabel(res.floors[last])}`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+// --- floor view: the focused building's layout, plus the route's floors ---
+
+// The switcher's floors: the focused building's and the route's, top floor first, no repeats.
+export function switcherFloors(buildingFloors, routeFloorList) {
+  return [...new Set([...buildingFloors, ...routeFloorList])].sort((a, b) => b - a);
+}
+
+// The floor shown when the view opens: the route's first indoor floor if it has one, else the building's
+// ground floor (its lowest floor at or above 0), else its top floor (a building that is all basement).
+export function initialFloor(buildingFloors, route) {
+  const fromRoute = route ? defaultFloor(route) : null;
+  if (fromRoute !== null) return fromRoute;
+  if (buildingFloors.length === 0) return null;
+  const aboveGround = buildingFloors.filter((f) => f >= 0);
+  return aboveGround.length > 0 ? Math.min(...aboveGround) : Math.max(...buildingFloors);
+}
+
+// How the floor view draws one layout point: "stairs" / "elevator" (a small badge), "place" (a dot you can
+// route to: it has a POI), or null (not drawn: corridors, and doors, which already have their red dots).
+export function layoutPointStyle(point) {
+  if (point.type === "entrance") return null;
+  if (point.type === "stairs" || point.type === "elevator") return point.type;
+  return point.poi_id !== null ? "place" : null;
+}
+
+// --- search ---
+
+// /search query params; with buildingId, the room search inside that building.
+export function searchParams(q, limit, buildingId = null) {
+  const params = new URLSearchParams({ q, limit });
+  if (buildingId !== null) params.set("building", buildingId);
+  return params;
+}
+
+// The grey line under a room-box result: the POI's own floor (a label; may be missing).
+export function describeRoomResult(r) {
+  return r.floor === null || r.floor === undefined ? "Place" : `Floor ${floorLabel(r.floor)}`;
+}
+
+// --- campuses ---
+
+// The campus to open: the one the URL asks for if it exists, else the first (/campuses is sorted by id).
+export function chooseCampus(campuses, requestedId) {
+  return campuses.find((c) => c.id === requestedId) ?? campuses[0] ?? null;
+}
+
+// The picker's label: campus.csv's name; the API falls back to the id, and so does this.
+export function campusLabel(campus) {
+  return campus.name || campus.id;
+}
+
+// The page URL with ?campus=<id> set, other query params and the hash kept. Used with history.replaceState.
+export function campusUrl(href, campusId) {
+  const url = new URL(href);
+  url.searchParams.set("campus", campusId);
+  return url.toString();
+}

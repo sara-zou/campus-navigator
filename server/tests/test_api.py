@@ -63,7 +63,13 @@ def test_create_app_raises_on_missing_data_folder(tmp_path):
 def test_campuses_lists_id_and_bounds(data_root):
     res = get(data_root, "/campuses")
     assert res.status_code == 200
-    assert res.json() == [{"id": "tiny-campus", "bounds": [[42.0005, -71.0050], [42.0055, -71.0005]]}]
+    assert res.json() == [{"id": "tiny-campus", "name": "tiny-campus",   # no campus.csv: name is the id
+                           "bounds": [[42.0005, -71.0050], [42.0055, -71.0005]]}]
+
+
+def test_campuses_name_from_campus_csv(tmp_path, tiny_indoor):
+    copy_campus(tiny_indoor, tmp_path, "tiny-indoor")
+    assert get(tmp_path, "/campuses").json()[0]["name"] == "Tiny Indoor"
 
 
 def test_campuses_multiple_sorted(tmp_path, tiny_campus):
@@ -368,6 +374,28 @@ def test_route_room_to_same_room_has_no_entrance(indoor_root):
     assert body["entrance_id"] is None and body["entrance_name"] is None
     assert body["coords"] == [[42.30027, -71.10003]]
     assert body["floor_changes"] == []
+
+
+def test_indoor_layout(indoor_root):
+    body = get(indoor_root, "/campuses/tiny-indoor/buildings/hq/indoor").json()
+    assert body["floors"] == [0, 1]
+    assert set(body["by_floor"]) == {"0", "1"}
+    first = body["by_floor"]["1"]
+    room = next(p for p in first["points"] if p["node_id"] == "r101")
+    assert room == {"node_id": "r101", "type": "room", "lat": 42.30027, "lon": -71.10003,
+                    "poi_id": "poi_r101", "name": "Room 101"}
+    assert len(first["segments"]) == 4
+    assert all(len(seg) == 2 and all(len(pt) == 2 for pt in seg) for seg in first["segments"])  # [[lat, lon], [lat, lon]]
+
+
+def test_indoor_layout_without_interior(data_root):
+    assert get(data_root, "/campuses/tiny-campus/buildings/bA/indoor").json() == {"floors": [], "by_floor": {}}
+
+
+def test_indoor_layout_unknown_building_404(data_root):
+    res = get(data_root, "/campuses/tiny-campus/buildings/nope/indoor")
+    assert res.status_code == 404
+    assert res.json() == {"detail": "unknown building 'nope'"}
 
 
 def test_search_outdoor_leaves_out_rooms(indoor_root):

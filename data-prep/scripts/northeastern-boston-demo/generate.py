@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
 from indoor_builder import M_PER_DEG_LAT, NODE_COLS, Building, Door, build_interior  # noqa: E402
 
 CAMPUS_ID = "northeastern-boston-demo"
+CAMPUS_NAME = "Northeastern (demo interiors)"  # not copied from the real campus.csv: says it's a demo
 DATA = Path(__file__).resolve().parents[3] / "data"
 REAL_DIR = DATA / "northeastern-boston"
 OUT_DIR = DATA / CAMPUS_ID
@@ -122,6 +123,7 @@ def main():
     ids = [n["node_id"] for n in nodes]
     assert len(ids) == len(set(ids)), "a mock node id collides with a real one"
     OUT_DIR.mkdir(exist_ok=True)
+    write(OUT_DIR / "campus.csv", ["name"], [{"name": CAMPUS_NAME}])
     write(OUT_DIR / "buildings.csv", b_cols, buildings)
     write(OUT_DIR / "nodes.csv", NODE_COLS, nodes)
     write(OUT_DIR / "edges.csv", e_cols, edges)

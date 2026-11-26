@@ -12,6 +12,7 @@
   <div id="map"></div>
   <!-- A sibling of #map, not inside it, so clicks and scrolling here never reach the map. -->
   <div id="search-panel">
+    <select id="campus-select" aria-label="Campus" hidden></select>
     <input id="search-input" type="search" placeholder="Search buildings and places"
            aria-label="Search buildings and places" autocomplete="off">
     <!-- values must be keys of MODES in server/query.py -->
@@ -20,7 +21,12 @@
       <label><input type="radio" name="mode" value="walk" checked><span>Walk</span></label>
       <label><input type="radio" name="mode" value="wheelchair"><span>Wheelchair</span></label>
     </fieldset>
-    <ul id="search-results" hidden></ul>
+    <ul id="search-results" class="search-results" hidden></ul>
+    <!-- Shown once a building with an indoor map is picked: searches rooms inside it. -->
+    <div id="room-box" hidden>
+      <input id="room-input" type="search" placeholder="Search rooms" aria-label="Search rooms" autocomplete="off">
+      <ul id="room-results" class="search-results" hidden></ul>
+    </div>
     <div id="route-info" hidden></div>
   </div>
   <div id="status" hidden></div>

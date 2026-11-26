@@ -27,6 +27,8 @@ COST_UNITS = {"meters", "seconds"}  # seconds: stairs and elevators, whose cost 
 
 POI_COLS = ["poi_id", "node_id", "name", "category", "building_id", "floor", "accessible", "notes"]
 
+CAMPUS_COLS = ["name"]  # campus.csv: optional, exactly one row; missing file = the name is the id
+
 
 @dataclass(frozen=True)
 class Building:
@@ -75,6 +77,7 @@ class POI:
 class Campus:
     """One fully validated campus. Read-only: mappings are MappingProxyType, sequences are tuples."""
     id: str
+    name: str                # display name from campus.csv, else the id
     buildings: Mapping[str, Building]
     nodes: Mapping[str, Node]
     adjacency: Mapping[str, tuple[tuple[str, Edge], ...]]     # node_id -> ((neighbor_id, Edge), ...)
@@ -405,6 +408,19 @@ def check_cross_file(buildings, nodes):
 
 # --- campus ---
 
+def load_campus_name(campus_dir, campus_id):
+    """The display name from the optional campus.csv (one row, non-empty name), else the id."""
+    file = "campus.csv"
+    path = Path(campus_dir) / file
+    if not path.is_file():
+        return campus_id
+    rows = list(read_rows(path, CAMPUS_COLS))
+    if len(rows) != 1:
+        raise LoadError(file, None, f"expected exactly one row, got {len(rows)}")
+    row, r = rows[0]
+    return require(r["name"], file, row, "name")
+
+
 def load_campus(campus_dir):
     """Load and validate one campus folder. Errors are prefixed with the campus folder name."""
     campus_dir = Path(campus_dir)
@@ -412,6 +428,7 @@ def load_campus(campus_dir):
     if not CAMPUS_ID_PATTERN.fullmatch(campus_id):
         raise LoadError(campus_id, None, "campus folder name must be lowercase letters, digits, and single hyphens")
     try:
+        name = load_campus_name(campus_dir, campus_id)
         buildings = load_buildings(campus_dir)
         nodes, entrances_by_building = load_nodes(campus_dir, buildings)
         adjacency = load_edges(campus_dir, nodes)
@@ -422,6 +439,7 @@ def load_campus(campus_dir):
 
     return Campus(
         id=campus_id,
+        name=name,
         buildings=MappingProxyType(buildings),
         nodes=MappingProxyType(nodes),
         adjacency=MappingProxyType({k: tuple(v) for k, v in adjacency.items()}),

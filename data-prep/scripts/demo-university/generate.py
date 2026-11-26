@@ -13,7 +13,7 @@ don't sit on real ones). Each building covers one demo case:
 Outdoors is a hand-written sidewalk network, including one steps edge (the hill stairs)
 with a longer accessible ramp beside it, and a bus stop POI.
 
-Everything is placed in metres east/north of ORIGIN. Rerunning overwrites all four CSVs.
+Everything is placed in metres east/north of ORIGIN. Rerunning overwrites every CSV (campus.csv too).
 Run from data-prep/: .venv/bin/python scripts/demo-university/generate.py
 """
 import csv
@@ -26,6 +26,7 @@ from indoor_builder import (EDGE_COLS, NODE_COLS, POI_COLS, Building, Door,  # n
                             build_interior, footprint, haversine_m, local_to_latlon)
 
 CAMPUS_ID = "demo-university"
+CAMPUS_NAME = "Demo University"
 OUT_DIR = Path(__file__).resolve().parents[3] / "data" / CAMPUS_ID
 ORIGIN = (42.305, -71.093)
 
@@ -145,6 +146,7 @@ def write(path, cols, rows):
 def main():
     buildings, nodes, edges, pois = generate()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    write(OUT_DIR / "campus.csv", ["name"], [{"name": CAMPUS_NAME}])
     write(OUT_DIR / "buildings.csv", ["building_id", "name", "polygon_geojson"], buildings)
     write(OUT_DIR / "nodes.csv", NODE_COLS, nodes)
     write(OUT_DIR / "edges.csv", EDGE_COLS, edges)

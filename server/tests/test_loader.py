@@ -550,6 +550,38 @@ def test_load_campus_rejects_bad_folder_name(tmp_path, tiny_campus, name):
         load_campus(tmp_path / name)
 
 
+# --- campus.csv (optional display name) ---
+
+def with_campus_csv(tmp_path, tiny_campus, text):
+    d = copy_campus(tiny_campus, tmp_path, "tiny-campus")
+    (d / "campus.csv").write_text(text)
+    return d
+
+
+def test_campus_name_defaults_to_id(tiny_campus):
+    assert load_campus(tiny_campus).name == "tiny-campus"
+
+
+def test_campus_name_from_campus_csv(tmp_path, tiny_campus):
+    assert load_campus(with_campus_csv(tmp_path, tiny_campus, "name\n  Tiny U  \n")).name == "Tiny U"
+
+
+def test_campus_name_from_indoor_fixture(tiny_indoor):
+    assert load_campus(tiny_indoor).name == "Tiny Indoor"
+
+
+@pytest.mark.parametrize("text, msg", [
+    ("name\n\n", "expected exactly one row, got 0"),
+    ("name\nA\nB\n", "expected exactly one row, got 2"),
+    ("name\n \n", "name is required"),          # a cell of spaces trims to empty
+    ("title\nA\n", "missing columns: name"),
+])
+def test_bad_campus_csv_raises(tmp_path, tiny_campus, text, msg):
+    with pytest.raises(LoadError, match=msg) as e:
+        load_campus(with_campus_csv(tmp_path, tiny_campus, text))
+    assert str(e.value).startswith("tiny-campus/campus.csv")
+
+
 # --- cross-file checks ---
 
 def test_distance_to_bbox_inside_is_zero():

@@ -11,7 +11,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 
 from loader import load_all
-from query import DEFAULT_SEARCH_LIMIT, MODES, NoRoute, is_entrance, poi_name_at, route, search
+from query import (DEFAULT_SEARCH_LIMIT, MODES, NoRoute, building_layout, is_entrance, poi_name_at, route,
+                   search)
 
 DATA_ENV_VAR = "CAMPUS_DATA"
 DEFAULT_DATA_ROOT = Path(__file__).resolve().parents[1] / "data"
@@ -58,11 +59,27 @@ def building_summaries(campus):
     return out
 
 
+def layout_summary(campus, building_id):
+    """/indoor response: {floors, by_floor: {"<floor>": {segments, points}}}. JSON keys are strings."""
+    layout = building_layout(campus, building_id)
+    return {
+        "floors": list(layout.floors),
+        "by_floor": {
+            str(f): {
+                "segments": [[list(a), list(b)] for a, b in fl.segments],  # [[[lat, lon], [lat, lon]], ...]
+                "points": [asdict(p) for p in fl.points],
+            }
+            for f, fl in layout.by_floor.items()
+        },
+    }
+
+
 def create_app(data_root=None):
     """Load every campus up front; bad data raises LoadError here, so the server never starts."""
     campuses = load_all(resolve_data_root(data_root))
-    summaries = [{"id": cid, "bounds": campus_bounds(c)} for cid, c in campuses.items()]
+    summaries = [{"id": cid, "name": c.name, "bounds": campus_bounds(c)} for cid, c in campuses.items()]
     buildings = {cid: building_summaries(c) for cid, c in campuses.items()}
+    layouts = {cid: {bid: layout_summary(c, bid) for bid in c.buildings} for cid, c in campuses.items()}
 
     app = FastAPI(title="Campus Navigator")
     app.state.campuses = campuses
@@ -80,6 +97,13 @@ def create_app(data_root=None):
     @app.get("/campuses/{campus_id}/buildings")
     def list_buildings(campus_id: str = Depends(get_campus)):
         return buildings[campus_id]
+
+    @app.get("/campuses/{campus_id}/buildings/{building_id}/indoor")
+    def building_indoor(building_id: str, campus_id: str = Depends(get_campus)):
+        """A building's schematic floor plans for the floor view; {floors: [], by_floor: {}} without an interior."""
+        if building_id not in layouts[campus_id]:
+            raise HTTPException(404, f"unknown building {building_id!r}")
+        return layouts[campus_id][building_id]
 
     @app.get("/campuses/{campus_id}/search")
     def search_campus(campus_id: str = Depends(get_campus), q: str = Query(),

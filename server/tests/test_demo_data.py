@@ -109,8 +109,12 @@ def test_api_buildings_floors():
 
 def test_demo_is_first_campus():
     # the frontend uses the first campus from /campuses until step 6's picker
-    ids = [c["id"] for c in TestClient(create_app(DATA)).get("/campuses").json()]
-    assert ids[0] == "demo-university"
+    body = TestClient(create_app(DATA)).get("/campuses").json()
+    assert body[0]["id"] == "demo-university"
+    names = {c["id"]: c["name"] for c in body}
+    assert names["demo-university"] == "Demo University"
+    assert names["northeastern-boston"] == "Northeastern University"
+    assert names["northeastern-boston-demo"] == "Northeastern (demo interiors)"
 
 
 # --- northeastern-boston-demo: real NEU + mock interiors (data-prep/scripts/northeastern-boston-demo/) ---

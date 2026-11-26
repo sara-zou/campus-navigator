@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  describeFlags, describeNoRoute, describeRoute, flagLabel, flagSections, formatDistance, formatDuration, isSteps,
+  campusLabel, campusUrl, chooseCampus, describeRoomResult, searchParams, classifySegments, defaultFloor, describeFloors, floorLabel, initialFloor,
+  layoutPointStyle, moveBadge, switcherFloors,
+  routeFloors, routeRuns, segmentVisible, verticalMoves, describeFlags, describeNoRoute, describeRoute, flagLabel, flagSections, formatDistance, formatDuration, isSteps,
   routeParams,
 } from "../helpers.js";
 
@@ -148,4 +150,160 @@ test("describeFlags counts steps sections", () => {
 test("describeFlags uses generic wording unless every flag is steps", () => {
   assert.equal(describeFlags([steps(0), slope(3)]), "Includes 2 sections not known to be wheelchair-accessible");
   assert.equal(describeFlags([unknown(1)]), "Includes a section not known to be wheelchair-accessible");
+});
+
+const CAMPUSES = [
+  { id: "demo-university", name: "Demo University", bounds: null },
+  { id: "northeastern-boston", name: "Northeastern University", bounds: null },
+];
+
+test("chooseCampus picks the requested campus, else the first", () => {
+  assert.equal(chooseCampus(CAMPUSES, "northeastern-boston").id, "northeastern-boston");
+  assert.equal(chooseCampus(CAMPUSES, null).id, "demo-university");
+  assert.equal(chooseCampus(CAMPUSES, "nope").id, "demo-university");
+  assert.equal(chooseCampus(CAMPUSES, "Northeastern-Boston").id, "demo-university"); // ids are case-sensitive
+  assert.equal(chooseCampus([], "x"), null);
+});
+
+test("campusLabel uses the name, falling back to the id", () => {
+  assert.equal(campusLabel(CAMPUSES[0]), "Demo University");
+  assert.equal(campusLabel({ id: "tiny", name: "" }), "tiny");
+  assert.equal(campusLabel({ id: "tiny" }), "tiny");
+});
+
+test("campusUrl sets ?campus= and keeps the rest of the URL", () => {
+  assert.equal(campusUrl("http://localhost:8000/", "demo-university"), "http://localhost:8000/?campus=demo-university");
+  assert.equal(campusUrl("http://localhost:8000/?campus=old&x=1#map", "new"), "http://localhost:8000/?campus=new&x=1#map");
+});
+
+// The tiny-indoor route from south of hq to Room 101, as /route returns it (see CLAUDE.md, step 5 example).
+const INDOOR_ROUTE = {
+  coords: [[0, 0], [1, 0], [2, 0], [3, 0], [3, 0], [4, 0], [5, 0]],
+  floors: [0, 0, 0, 0, 1, 1, 1],
+  indoor: [false, false, true, true, true, true, true],
+  floor_changes: [{ index: 3, from_floor: 0, to_floor: 1, edge_type: "steps" }],
+};
+const OUTDOOR_ROUTE = { coords: [[0, 0], [1, 0]], floors: [0, 0], indoor: [false, false], floor_changes: [] };
+
+test("floorLabel", () => {
+  assert.equal(floorLabel(0), "G");
+  assert.equal(floorLabel(-1), "B1");
+  assert.equal(floorLabel(-2), "B2");
+  assert.equal(floorLabel(3), "3");
+});
+
+test("classifySegments: outdoor, door edge counts as indoor, stairs are vertical", () => {
+  assert.deepEqual(classifySegments(INDOOR_ROUTE), [
+    { kind: "outdoor" },
+    { kind: "indoor", floor: 0 },   // door (outdoor) -> corridor (indoor)
+    { kind: "indoor", floor: 0 },
+    { kind: "vertical", from: 0, to: 1 },
+    { kind: "indoor", floor: 1 },
+    { kind: "indoor", floor: 1 },
+  ]);
+});
+
+test("classifySegments: an upper-floor door's outdoor connector is outdoor, not vertical", () => {
+  const hill = { coords: [[0, 0], [1, 0]], floors: [0, 1], indoor: [false, false] };
+  assert.deepEqual(classifySegments(hill), [{ kind: "outdoor" }]);
+});
+
+test("segmentVisible", () => {
+  assert.equal(segmentVisible({ kind: "outdoor" }, 5), true);
+  assert.equal(segmentVisible({ kind: "indoor", floor: 1 }, 1), true);
+  assert.equal(segmentVisible({ kind: "indoor", floor: 1 }, 0), false);
+  assert.equal(segmentVisible({ kind: "vertical", from: 0, to: 2 }, 2), true);
+  assert.equal(segmentVisible({ kind: "vertical", from: 0, to: 2 }, 1), false);
+});
+
+test("routeRuns merges segments by visibility", () => {
+  assert.deepEqual(routeRuns(INDOOR_ROUTE, 0), [
+    { coords: [[0, 0], [1, 0], [2, 0], [3, 0], [3, 0]], visible: true },   // outdoor + floor 0 + the stairs
+    { coords: [[3, 0], [4, 0], [5, 0]], visible: false },
+  ]);
+  assert.deepEqual(routeRuns(INDOOR_ROUTE, 1), [
+    { coords: [[0, 0], [1, 0]], visible: true },
+    { coords: [[1, 0], [2, 0], [3, 0]], visible: false },
+    { coords: [[3, 0], [3, 0], [4, 0], [5, 0]], visible: true },
+  ]);
+  assert.deepEqual(routeRuns(OUTDOOR_ROUTE, null), [{ coords: [[0, 0], [1, 0]], visible: true }]);
+  assert.deepEqual(routeRuns({ coords: [[0, 0]], floors: [1], indoor: [true] }, 1), []);
+});
+
+test("routeFloors and defaultFloor", () => {
+  assert.deepEqual(routeFloors(INDOOR_ROUTE), [1, 0]);
+  assert.equal(defaultFloor(INDOOR_ROUTE), 0);
+  assert.deepEqual(routeFloors(OUTDOOR_ROUTE), []);
+  assert.equal(defaultFloor(OUTDOOR_ROUTE), null);
+  const fromRoom = { ...INDOOR_ROUTE, floors: [2, 2, 1], indoor: [true, true, true] };
+  assert.equal(defaultFloor(fromRoom), 2);
+});
+
+test("verticalMoves keeps stairs and elevators, drops connectors", () => {
+  const res = {
+    floor_changes: [
+      { index: 0, from_floor: 0, to_floor: 1, edge_type: "connector" },
+      { index: 3, from_floor: 1, to_floor: -1, edge_type: "elevator" },
+      { index: 5, from_floor: -1, to_floor: 0, edge_type: "steps+footway" },
+      { index: 6, from_floor: 0, to_floor: 1, edge_type: null },
+    ],
+  };
+  assert.deepEqual(verticalMoves(res).map((m) => [m.index, m.label]), [
+    [3, "Elevator down to floor B1"],
+    [5, "Stairs up to floor G"],
+  ]);
+});
+
+test("moveBadge points to the other end of the move", () => {
+  const move = { from_floor: 0, to_floor: 2 };
+  assert.deepEqual(moveBadge(move, 0), { text: "↑ 2", target: 2 });
+  assert.deepEqual(moveBadge(move, 2), { text: "↓ G", target: 0 });
+  assert.equal(moveBadge(move, 1), null);
+});
+
+test("describeFloors", () => {
+  assert.equal(describeFloors(INDOOR_ROUTE), "Stairs up to floor 1 · Ends on floor 1");
+  assert.equal(describeFloors(OUTDOOR_ROUTE), null);
+  const exitRoute = { ...INDOOR_ROUTE, indoor: [true, true, false], floors: [0, 0, 0], coords: [[0, 0], [1, 0], [2, 0]],
+                      floor_changes: [] };
+  assert.equal(describeFloors(exitRoute), null);   // indoors, but no move and ends outside
+});
+
+test("switcherFloors merges the building's and the route's floors, top first", () => {
+  assert.deepEqual(switcherFloors([-1, 0, 1], [1, 2]), [2, 1, 0, -1]);
+  assert.deepEqual(switcherFloors([], [1, 0]), [1, 0]);
+  assert.deepEqual(switcherFloors([0, 1], []), [1, 0]);
+  assert.deepEqual(switcherFloors([], []), []);
+});
+
+test("initialFloor prefers the route's first indoor floor, else the building's ground floor", () => {
+  assert.equal(initialFloor([-1, 0, 1, 2], INDOOR_ROUTE), 0);
+  assert.equal(initialFloor([-1, 0, 1, 2], null), 0);
+  assert.equal(initialFloor([1, 2, 3], null), 1);         // no floor 0: lowest above ground
+  assert.equal(initialFloor([-2, -1], null), -1);         // all basement: the top one
+  assert.equal(initialFloor([0, 1], OUTDOOR_ROUTE), 0);   // an outdoor route doesn't pick a floor
+  assert.equal(initialFloor([], null), null);
+});
+
+test("layoutPointStyle", () => {
+  const pt = (type, poi_id = null) => ({ type, poi_id });
+  assert.equal(layoutPointStyle(pt("room", "poi-r1")), "place");
+  assert.equal(layoutPointStyle(pt("room")), null);                // no POI: nothing to route to
+  assert.equal(layoutPointStyle(pt("stairs")), "stairs");
+  assert.equal(layoutPointStyle(pt("elevator", "poi-lift")), "elevator");
+  assert.equal(layoutPointStyle(pt("corridor")), null);
+  assert.equal(layoutPointStyle(pt("entrance", "poi-door")), null); // drawn as a red door dot already
+  assert.equal(layoutPointStyle(pt("restroom", "poi-wc")), "place"); // type is an open set
+});
+
+test("searchParams: outdoor and in-building", () => {
+  assert.equal(searchParams("room 1", 10).toString(), "q=room+1&limit=10");
+  assert.equal(searchParams("room 1", 10, "hall").toString(), "q=room+1&limit=10&building=hall");
+});
+
+test("describeRoomResult shows the POI's floor", () => {
+  assert.equal(describeRoomResult({ floor: 1 }), "Floor 1");
+  assert.equal(describeRoomResult({ floor: 0 }), "Floor G");
+  assert.equal(describeRoomResult({ floor: -1 }), "Floor B1");
+  assert.equal(describeRoomResult({ floor: null }), "Place");
 });
