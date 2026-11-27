@@ -2,7 +2,7 @@
 // Coordinates: the API gives (lat, lon) everywhere except building geometry (GeoJSON [lon, lat]).
 
 import {
-  campusLabel, campusUrl, chooseCampus, describeRoomResult, searchParams, classifySegments, describeFlags, describeFloors,
+  campusLabel, campusUrl, chooseCampus, doorDetails, describeRoomResult, searchParams, classifySegments, describeFlags, describeFloors,
   describeNoRoute, describeRoute, flagLabel, floorLabel, focusChoices, initialFloor, layoutPointStyle, moveBadge,
   placeBuildingId, routeFloorFor, routeFloors,
   routeParams, routeRuns, segmentVisible, switcherFloors, verticalMoves,
@@ -41,6 +41,8 @@ const NO_ENTRANCE_STYLE = { color: "#6b7280", weight: 1, dashArray: "4 4", fillO
 const ENTRANCE_STYLE = {
   radius: 5, color: "#fff", weight: 1.5, fillColor: "#dc2626", fillOpacity: 1, bubblingMouseEvents: false,
 };
+// A door not known to be wheelchair-accessible (false or unknown): a hollow red ring.
+const STEPPED_ENTRANCE_STYLE = { ...ENTRANCE_STYLE, color: "#dc2626", weight: 2.5, fillColor: "#fff" };
 
 const HIGHLIGHT_STYLE = { weight: 4, fillOpacity: 0.3 }; // the destination's building
 const START_HIGHLIGHT_STYLE = { color: "#16a34a", weight: 3, fillOpacity: 0.2 }; // the start's (green, like its dot)
@@ -72,7 +74,7 @@ function drawBuildings(buildings) {
   for (const b of buildings) {
     for (const e of b.entrances) {
       doorsById.set(e.node_id, { name: e.name ?? `Entrance of ${b.name}`, building_id: b.id });
-      const marker = L.circleMarker([e.lat, e.lon], ENTRANCE_STYLE)
+      const marker = L.circleMarker([e.lat, e.lon], e.accessible === true ? ENTRANCE_STYLE : STEPPED_ENTRANCE_STYLE)
         .bindTooltip(textEl(e.name ?? "Entrance"))
         .addTo(entrancesLayer);
       marker.bindPopup(() => entrancePopup(b, e));
@@ -80,15 +82,27 @@ function drawBuildings(buildings) {
   }
 }
 
-// Door popup, built from elements (never an HTML string): name, building, "Route here" / "Start here".
+// Door popup, built from elements (never an HTML string): name, building (and floor, off the ground),
+// accessibility, a wheelchair-mode warning, "Route here" / "Start here". Built when it opens, so it
+// follows the current mode.
 function entrancePopup(building, entrance) {
   const label = entrance.name ?? `Entrance of ${building.name}`;
+  const details = doorDetails(entrance, mode);
   const box = document.createElement("div");
   box.className = "entrance-popup";
   const title = document.createElement("strong");
   title.textContent = label;
   const sub = document.createElement("div");
-  sub.textContent = building.name;
+  sub.textContent = details.floor ? `${building.name} · ${details.floor}` : building.name;
+  const access = document.createElement("div");
+  access.textContent = details.access;
+  box.append(title, sub, access);
+  if (details.warning) {
+    const warning = document.createElement("div");
+    warning.className = "popup-warning";
+    warning.textContent = details.warning;
+    box.append(warning);
+  }
   const buttons = document.createElement("div");
   buttons.className = "entrance-popup-buttons";
   const routeHere = document.createElement("button");
@@ -107,7 +121,7 @@ function entrancePopup(building, entrance) {
     setPlace("from", door); // from_entrance: starts at the door node itself, no snapping
   });
   buttons.append(routeHere, startHere);
-  box.append(title, sub, buttons);
+  box.append(buttons);
   return box;
 }
 

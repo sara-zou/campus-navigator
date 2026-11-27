@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  campusLabel, campusUrl, focusChoices, lastIndoorFloor, placeBuildingId, routeFloorFor, chooseCampus, describeRoomResult, searchParams, classifySegments, defaultFloor, describeFloors, floorLabel, initialFloor,
+  campusLabel, campusUrl, doorDetails, focusChoices, lastIndoorFloor, placeBuildingId, routeFloorFor, chooseCampus, describeRoomResult, searchParams, classifySegments, defaultFloor, describeFloors, floorLabel, initialFloor,
   layoutPointStyle, moveBadge, switcherFloors,
   routeFloors, routeRuns, segmentVisible, verticalMoves, describeFlags, describeNoRoute, describeRoute, flagLabel, flagSections, formatDistance, formatDuration, isSteps,
   routeParams,
@@ -413,4 +413,19 @@ test("describeRoomResult shows the POI's floor", () => {
   assert.equal(describeRoomResult({ floor: 0 }), "Floor G");
   assert.equal(describeRoomResult({ floor: -1 }), "Floor B1");
   assert.equal(describeRoomResult({ floor: null }), "Place");
+});
+
+test("doorDetails: accessibility, floor off the ground, wheelchair warning", () => {
+  assert.deepEqual(doorDetails({ accessible: true, floor: 0 }, "walk"),
+    { floor: null, access: "Wheelchair accessible", warning: null });
+  assert.deepEqual(doorDetails({ accessible: false, floor: 1 }, "walk"),
+    { floor: "Floor 1", access: "Not wheelchair accessible", warning: null });
+  assert.equal(doorDetails({ accessible: null, floor: -1 }, "walk").floor, "Floor B1");
+  assert.equal(doorDetails({ accessible: null, floor: 0 }, "walk").access, "Accessibility unknown");
+});
+
+test("doorDetails warns in wheelchair mode for a door not known accessible", () => {
+  assert.equal(doorDetails({ accessible: false, floor: 0 }, "wheelchair").warning, "Wheelchair routes can't use this door");
+  assert.equal(doorDetails({ accessible: null, floor: 0 }, "wheelchair").warning, "Wheelchair routes can't use this door");
+  assert.equal(doorDetails({ accessible: true, floor: 0 }, "wheelchair").warning, null);
 });

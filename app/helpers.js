@@ -270,6 +270,23 @@ export function focusChoices(start, destination, hasFloors) {
   return [...new Set(ids)];
 }
 
+// --- doors ---
+
+// A door from /buildings -> its popup's details: {floor, access, warning}.
+//   floor    "Floor 1" for a door off the ground floor (a door up a hill), else null
+//   access   the door's own accessibility: accessible is true / false / null (unknown)
+//   warning  in wheelchair mode, for a door that isn't known accessible: the door rule blocks it
+//            (unknown is treated like false), so "Route here" would give no accessible path
+export function doorDetails(entrance, mode) {
+  const access = entrance.accessible === true ? "Wheelchair accessible"
+    : entrance.accessible === false ? "Not wheelchair accessible" : "Accessibility unknown";
+  return {
+    floor: entrance.floor === 0 ? null : `Floor ${floorLabel(entrance.floor)}`,
+    access,
+    warning: mode === "wheelchair" && entrance.accessible !== true ? "Wheelchair routes can't use this door" : null,
+  };
+}
+
 // --- search ---
 
 // /search query params; with buildingId, the room search inside that building.

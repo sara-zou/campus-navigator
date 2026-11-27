@@ -244,6 +244,11 @@ html, body {
   color: #6b7280;
 }
 
+.entrance-popup .popup-warning {
+  margin-top: 4px;
+  color: #9a3412;
+}
+
 .entrance-popup-buttons {
   display: flex;
   gap: 6px;
