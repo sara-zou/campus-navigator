@@ -612,8 +612,41 @@ def test_room_to_same_room_is_zero_length(indoor):
     assert r.floors == (1,) and r.floor_changes == ()
 
 
+def test_start_from_building_leaves_by_the_best_door_for_the_target(indoor):
+    r = route(indoor, from_building="hq", to_poi="poi_r101")
+    assert r.start_id == "e2" and r.nodes == ("e2", "c1", "r101")
+    assert r.coords[0] == (indoor.nodes["e2"].x_or_lat, indoor.nodes["e2"].y_or_lon)
+    assert r.approach_m == 0 and r.floors[0] == 1
+    assert route(indoor, from_building="hq", to_entrance="e1").start_id == "e1"
+
+
+def test_start_from_building_wheelchair_skips_the_stepped_door(indoor):
+    r = route(indoor, from_building="hq", to_poi="poi_r101", mode="wheelchair")
+    assert r.start_id == "e1" and "l0" in r.nodes
+
+
+def test_start_from_building_to_same_building(indoor):
+    walk = route(indoor, from_building="hq", to_building="hq")
+    assert walk.nodes == (walk.start_id,) and walk.start_id in ("e1", "e2") and walk.distance_m == 0
+    chair = route(indoor, from_building="hq", to_building="hq", mode="wheelchair")
+    assert chair.nodes == ("e1",)                    # never the stepped door, even with no edge taken
+
+
+def test_start_from_building_without_entrances(campus):
+    assert route(campus, from_building="bB", to_building="bA") == NoRoute("start_no_entrances")
+    assert route(campus, from_building="bB", to_building="bB") == NoRoute("no_entrances")  # target first
+
+
+def test_start_id(campus, indoor):
+    assert route(campus, *AT_W3, to_building="bA").start_id is None        # GPS
+    assert route(indoor, from_poi="poi_r101", to_entrance="e2").start_id == "r101"
+    assert route(indoor, from_entrance="e1", to_poi="poi_r101").start_id == "e1"
+
+
 @pytest.mark.parametrize("args, kwargs, err", [
     ((), {"to_building": "hq"}, ValueError),                                       # no start
+    ((), {"from_building": "hq", "from_entrance": "e1", "to_poi": "poi_r101"}, ValueError),
+    ((), {"from_building": "nope", "to_poi": "poi_r101"}, KeyError),
     ((42.3,), {"to_building": "hq"}, ValueError),                                  # lat without lon
     (SOUTH, {"from_poi": "poi_r101", "to_building": "hq"}, ValueError),            # two starts
     ((), {"from_poi": "poi_r101", "from_entrance": "e1", "to_building": "hq"}, ValueError),

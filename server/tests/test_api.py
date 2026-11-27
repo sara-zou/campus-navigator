@@ -202,7 +202,8 @@ def test_route_walk_to_building_picks_best_entrance(data_root):
     assert body["floors"] == [0, 0]
     assert body["indoor"] == [False, False]
     assert body["floor_changes"] == []
-    assert set(body) == {"status", "coords", "distance_m", "approach_m", "duration_s", "end_id",
+    assert body["start_id"] is None                  # GPS start
+    assert set(body) == {"status", "coords", "distance_m", "approach_m", "duration_s", "start_id", "end_id",
                          "entrance_id", "entrance_name", "building_id", "flags",
                          "floors", "indoor", "floor_changes"}
 
@@ -281,6 +282,7 @@ def test_route_unknown_campus_404(data_root):
     "lat=42.0005&to_building=bA",                # lat without lon
     f"{AT_W1}&from_poi=poi_eA1&to_building=bA",  # two starts
     "from_poi=poi_eA1&from_entrance=eA1&to_building=bA",
+    "from_building=bA&from_entrance=eA1&to_building=bA",
 ])
 def test_route_bad_request_400(data_root, params):
     res = get(data_root, route_url(params))
@@ -302,6 +304,7 @@ def test_route_bad_coords_422(data_root, params):
     ("from_poi=nope&to_building=bA", "unknown poi 'nope'"),
     ("from_entrance=nope&to_building=bA", "unknown entrance 'nope'"),
     ("from_entrance=w1&to_building=bA", "unknown entrance 'w1'"),   # a node, but not an entrance
+    ("from_building=nope&to_building=bA", "unknown building 'nope'"),
 ])
 def test_route_unknown_start_404(data_root, params, detail):
     res = get(data_root, route_url(params))
@@ -366,6 +369,19 @@ def test_route_from_entrance_start(indoor_root):
     assert body["status"] == "ok"
     assert body["coords"][0] == [42.3001, -71.1001]
     assert body["end_id"] == "r101"
+
+
+def test_route_from_building_start(indoor_root):
+    body = get(indoor_root, indoor_url("from_building=hq&to_poi=poi_r101")).json()
+    assert body["status"] == "ok"
+    assert body["start_id"] == "e2" and body["approach_m"] == 0
+    body = get(indoor_root, indoor_url("from_building=hq&to_poi=poi_r101&mode=wheelchair")).json()
+    assert body["start_id"] == "e1"
+
+
+def test_route_from_building_without_entrances(data_root):
+    body = get(data_root, route_url("from_building=bB&to_building=bA")).json()
+    assert body == {"status": "no_route", "reason": "start_no_entrances", "distance_m": None}
 
 
 def test_route_room_to_same_room_has_no_entrance(indoor_root):

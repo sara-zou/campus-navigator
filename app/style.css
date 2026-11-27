@@ -68,8 +68,7 @@ html, body {
   display: none; /* the display rule above would otherwise override the hidden attribute */
 }
 
-#search-input,
-#room-input {
+.place-input {
   width: 100%;
   box-sizing: border-box;
   padding: 10px 12px;
@@ -79,15 +78,49 @@ html, body {
   font-size: 16px; /* 16px stops iOS from zooming in on focus */
 }
 
-#room-box {
+/* The swap button sits on the line between From and To, at the right; inputs leave room for it. */
+#from-endpoint {
+  position: relative;
+}
+
+.ends .place-input {
+  padding-right: 44px;
+}
+
+#swap-button {
+  position: absolute;
+  bottom: 0;
+  right: 8px;
+  z-index: 1;
+  transform: translateY(50%);
+  width: 30px;
+  height: 30px;
+  border: 1px solid #d1d5db;
+  border-radius: 50%;
+  background: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#swap-button:disabled {
+  color: #d1d5db;
+  cursor: not-allowed;
+}
+
+.endpoint + .endpoint {
   border-top: 1px solid #e5e7eb;
 }
 
-#room-box[hidden] {
+.room-box {
+  border-top: 1px solid #e5e7eb;
+}
+
+.room-box[hidden] {
   display: none;
 }
 
-#room-input {
+.room-input {
   background: #f9fafb; /* a step "inside" the building box above */
 }
 
@@ -153,8 +186,9 @@ html, body {
   display: flex;
   gap: 4px;
   margin: 0;
-  padding: 0 8px 8px;
+  padding: 8px;
   border: none;
+  border-top: 1px solid #e5e7eb;
 }
 
 /* Visually hidden but still read by screen readers. */
@@ -261,6 +295,31 @@ html, body {
 
 .floor-switcher button:first-child {
   border-top: none;
+}
+
+/* Building switch above the floors: names can be long, so they're cut short (full name on hover). */
+.focus-switch {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 2px solid rgba(0, 0, 0, 0.2);
+}
+
+.focus-switch[hidden] {
+  display: none;
+}
+
+.floor-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.focus-switch button {
+  max-width: 120px;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
 }
 
 .floor-switcher button[aria-pressed="true"] {

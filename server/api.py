@@ -123,9 +123,9 @@ def create_app(data_root=None):
                      lat: float | None = Query(None, ge=-90, le=90),
                      lon: float | None = Query(None, ge=-180, le=180),
                      from_poi: str | None = None, from_entrance: str | None = None,
-                     to_building: str | None = None, to_poi: str | None = None,
+                     from_building: str | None = None, to_building: str | None = None, to_poi: str | None = None,
                      to_entrance: str | None = None, mode: str = "walk"):
-        """GPS point, POI or entrance -> a building's best entrance, a POI, or one entrance (by node_id).
+        """GPS point, POI, entrance or building (its best door) -> a building's best entrance, a POI, or one entrance (by node_id).
 
         "No route" is a normal 200 answer.
 
@@ -135,8 +135,8 @@ def create_app(data_root=None):
         campus = campuses[campus_id]
         if (lat is None) != (lon is None):
             raise HTTPException(400, "give both lat and lon")
-        if sum(s is not None for s in (lat, from_poi, from_entrance)) != 1:
-            raise HTTPException(400, "give exactly one start: lat/lon, from_poi, from_entrance")
+        if sum(s is not None for s in (lat, from_poi, from_entrance, from_building)) != 1:
+            raise HTTPException(400, "give exactly one start: lat/lon, from_poi, from_entrance, from_building")
         if sum(t is not None for t in (to_building, to_poi, to_entrance)) != 1:
             raise HTTPException(400, "give exactly one of to_building, to_poi, to_entrance")
         if mode not in MODES:
@@ -145,6 +145,8 @@ def create_app(data_root=None):
             raise HTTPException(404, f"unknown poi {from_poi!r}")
         if from_entrance is not None and not is_entrance(campus, from_entrance):
             raise HTTPException(404, f"unknown entrance {from_entrance!r}")
+        if from_building is not None and from_building not in campus.buildings:
+            raise HTTPException(404, f"unknown building {from_building!r}")
         if to_building is not None and to_building not in campus.buildings:
             raise HTTPException(404, f"unknown building {to_building!r}")
         if to_poi is not None and to_poi not in campus.pois:
@@ -152,8 +154,8 @@ def create_app(data_root=None):
         if to_entrance is not None and not is_entrance(campus, to_entrance):
             raise HTTPException(404, f"unknown entrance {to_entrance!r}")  # also a node that isn't an entrance
 
-        result = route(campus, lat, lon, from_poi=from_poi, from_entrance=from_entrance, to_building=to_building, to_poi=to_poi,
-                       to_entrance=to_entrance, mode=mode)
+        result = route(campus, lat, lon, from_poi=from_poi, from_entrance=from_entrance, from_building=from_building,
+                       to_building=to_building, to_poi=to_poi, to_entrance=to_entrance, mode=mode)
         if isinstance(result, NoRoute):
             d = result.distance_m  # inf (no usable edge at all) isn't valid JSON, so it becomes null
             return {"status": "no_route", "reason": result.reason,
@@ -164,6 +166,7 @@ def create_app(data_root=None):
             "distance_m": result.distance_m,
             "approach_m": result.approach_m,
             "duration_s": result.duration_s,
+            "start_id": result.start_id,  # node the path starts from (door left by); null for a GPS start
             "end_id": result.end_id,
             "entrance_id": result.entrance_id,  # the door used; null if the path has none (room -> same room)
             "entrance_name": result.entrance_name,

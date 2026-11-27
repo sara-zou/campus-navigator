@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  campusLabel, campusUrl, chooseCampus, describeRoomResult, searchParams, classifySegments, defaultFloor, describeFloors, floorLabel, initialFloor,
+  campusLabel, campusUrl, focusChoices, lastIndoorFloor, placeBuildingId, routeFloorFor, chooseCampus, describeRoomResult, searchParams, classifySegments, defaultFloor, describeFloors, floorLabel, initialFloor,
   layoutPointStyle, moveBadge, switcherFloors,
   routeFloors, routeRuns, segmentVisible, verticalMoves, describeFlags, describeNoRoute, describeRoute, flagLabel, flagSections, formatDistance, formatDuration, isSteps,
   routeParams,
@@ -38,34 +38,118 @@ test("formatDuration shows hours", () => {
 });
 
 test("routeParams sends to_building for a building", () => {
-  const p = routeParams({ lat: 42.3, lon: -71.1 }, { kind: "building", id: "snl" }, "walk");
+  const p = routeParams({ kind: "point", lat: 42.3, lon: -71.1 }, { kind: "building", id: "snl" }, "walk");
   assert.equal(p.toString(), "lat=42.3&lon=-71.1&to_building=snl&mode=walk");
 });
 
 test("routeParams sends to_entrance (a node_id) for an entrance", () => {
-  const p = routeParams({ lat: 1, lon: 2 }, { kind: "entrance", id: "entrance_7" }, "walk");
+  const p = routeParams({ kind: "point", lat: 1, lon: 2 }, { kind: "entrance", id: "entrance_7" }, "walk");
   assert.equal(p.toString(), "lat=1&lon=2&to_entrance=entrance_7&mode=walk");
 });
 
 test("routeParams throws on an unknown kind", () => {
-  assert.throws(() => routeParams({ lat: 1, lon: 2 }, { kind: "room", id: "x" }, "walk"), /unknown destination kind/);
+  assert.throws(() => routeParams({ kind: "point", lat: 1, lon: 2 }, { kind: "room", id: "x" }, "walk"), /unknown destination kind/);
+});
+
+test("routeParams sends from_building / from_poi / from_entrance for a picked start, no lat/lon", () => {
+  const to = { kind: "building", id: "lib" };
+  assert.equal(routeParams({ kind: "building", id: "hall" }, to, "walk").toString(),
+    "from_building=hall&to_building=lib&mode=walk");
+  assert.equal(routeParams({ kind: "poi", id: "poi-r1" }, to, "walk").toString(), "from_poi=poi-r1&to_building=lib&mode=walk");
+  assert.equal(routeParams({ kind: "entrance", id: "e1" }, to, "walk").toString(), "from_entrance=e1&to_building=lib&mode=walk");
+});
+
+test("routeParams throws on a point destination and an unknown start kind", () => {
+  const point = { kind: "point", lat: 1, lon: 2 };
+  assert.throws(() => routeParams(point, point, "walk"), /unknown destination kind "point"/);
+  assert.throws(() => routeParams({ kind: "room", id: "x" }, { kind: "poi", id: "y" }, "walk"), /unknown start kind/);
 });
 
 test("routeParams sends to_poi for a POI, and escapes ids", () => {
-  const p = routeParams({ lat: 1, lon: 2 }, { kind: "poi", id: "a b&c" }, "wheelchair");
+  const p = routeParams({ kind: "point", lat: 1, lon: 2 }, { kind: "poi", id: "a b&c" }, "wheelchair");
   assert.equal(p.get("to_poi"), "a b&c");
   assert.equal(p.has("to_building"), false);
   assert.equal(p.toString(), "lat=1&lon=2&to_poi=a+b%26c&mode=wheelchair");
 });
 
-test("describeRoute adds the approach to the distance", () => {
-  const res = { entrance_name: "Main door", distance_m: 400, approach_m: 20, duration_s: 300 };
-  assert.deepEqual(describeRoute(res), { title: "Main door", detail: "420 m · 5 min" });
+// Doors for describeRoute: hall-s / hall-e (Main Hall), lib-w (Library, unnamed POI).
+const DOORS = {
+  "hall-s": { name: "Main Hall (South Entrance)", building_id: "hall" },
+  "lib-w": { name: "Entrance of Library", building_id: "lib" },
+};
+const door = (id) => DOORS[id] ?? null;
+const POINT = { kind: "point", lat: 1, lon: 2, name: "Point on map" };
+const HALL = { kind: "building", id: "hall", name: "Main Hall" };
+const ROUTE = {
+  start_id: null, entrance_id: "hall-s", entrance_name: "Main Hall (South Entrance)", building_id: "hall",
+  distance_m: 400, approach_m: 20, duration_s: 300,
+};
+
+test("describeRoute: destination name as title, the entry door, approach in the distance", () => {
+  assert.deepEqual(describeRoute(ROUTE, POINT, HALL, door), {
+    title: "Main Hall", details: [null, "Enter by Main Hall (South Entrance)", "420 m · 5 min"],
+  });
+  const room = { kind: "poi", id: "poi-g06", name: "Room G06", building_id: "hall" };
+  assert.equal(describeRoute(ROUTE, POINT, room, door).title, "Room G06");
+  assert.equal(describeRoute(ROUTE, POINT, room, door).details[1], "Enter by Main Hall (South Entrance)");
 });
 
-test("describeRoute falls back when the entrance has no name", () => {
-  const res = { entrance_name: null, distance_m: 0, approach_m: 0, duration_s: 0 };
-  assert.equal(describeRoute(res).title, "Entrance");
+test("describeRoute: no Enter by for a door destination", () => {
+  const d = { kind: "entrance", id: "hall-s", name: "Main Hall (South Entrance)", building_id: "hall" };
+  assert.equal(describeRoute(ROUTE, POINT, d, door).details[1], null);
+});
+
+test("describeRoute: the last door isn't an entry when the route ends outside its building", () => {
+  // room in Main Hall -> bus stop: the last door on the path is the one you leave by
+  const res = { ...ROUTE, building_id: null };
+  const from = { kind: "poi", id: "poi-g06", name: "Room G06", building_id: "hall" };
+  const bus = { kind: "poi", id: "poi-bus", name: "Bus Stop", building_id: null };
+  assert.deepEqual(describeRoute(res, from, bus, door).details.slice(0, 2), [null, null]);
+});
+
+test("describeRoute: no Enter by when the start is already in the end building", () => {
+  const from = { kind: "poi", id: "poi-g06", name: "Room G06", building_id: "hall" };
+  const to = { kind: "poi", id: "poi-101", name: "Room 101", building_id: "hall" };
+  assert.equal(describeRoute(ROUTE, from, to, door).details[1], null);
+});
+
+test("describeRoute: a building start says which door it leaves by", () => {
+  const res = { ...ROUTE, start_id: "lib-w" };
+  const lib = { kind: "building", id: "lib", name: "Library" };
+  assert.deepEqual(describeRoute(res, lib, HALL, door).details.slice(0, 2),
+    ["Leave by Entrance of Library", "Enter by Main Hall (South Entrance)"]);
+  assert.equal(describeRoute({ ...res, start_id: "gone" }, lib, HALL, door).details[0], "Leave by an entrance");
+});
+
+test("describeRoute: an unnamed entry door uses the door lookup's name", () => {
+  const res = { ...ROUTE, entrance_id: "lib-w", entrance_name: null, building_id: "lib" };
+  assert.equal(describeRoute(res, POINT, { kind: "building", id: "lib", name: "Library" }, door).details[1],
+    "Enter by Entrance of Library");
+});
+
+test("placeBuildingId", () => {
+  assert.equal(placeBuildingId(HALL), "hall");
+  assert.equal(placeBuildingId({ kind: "poi", id: "p", building_id: "lib" }), "lib");
+  assert.equal(placeBuildingId({ kind: "poi", id: "p", building_id: null }), null);
+  assert.equal(placeBuildingId(POINT), null);
+  assert.equal(placeBuildingId(null), null);
+});
+
+test("focusChoices: start first, only buildings with floors, no repeats", () => {
+  const hasFloors = (id) => id === "hall" || id === "lib";
+  const lib = { kind: "building", id: "lib", name: "Library" };
+  const cafe = { kind: "building", id: "cafe", name: "Cafe" };
+  const libRoom = { kind: "poi", id: "p1", name: "Room 101", building_id: "lib" };
+  const cafeRoom = { kind: "poi", id: "p2", name: "Counter", building_id: "cafe" };
+  assert.deepEqual(focusChoices(libRoom, HALL, hasFloors), ["lib", "hall"]);
+  assert.deepEqual(focusChoices(POINT, HALL, hasFloors), ["hall"]);
+  assert.deepEqual(focusChoices(cafeRoom, HALL, hasFloors), ["hall"]);
+  assert.deepEqual(focusChoices(libRoom, { kind: "poi", id: "p", building_id: "lib" }, hasFloors), ["lib"]);
+  assert.deepEqual(focusChoices(libRoom, null, hasFloors), ["lib"]);
+  // a building or door start leaves from outside: its plan isn't offered
+  assert.deepEqual(focusChoices(lib, HALL, hasFloors), ["hall"]);
+  assert.deepEqual(focusChoices({ kind: "entrance", id: "e", building_id: "lib" }, null, hasFloors), []);
+  assert.deepEqual(focusChoices(null, null, hasFloors), []);
 });
 
 test("describeNoRoute too_far with a distance", () => {
@@ -85,6 +169,15 @@ test("describeNoRoute no_entrances and no_path name the destination", () => {
     "Ell Hall has no mapped entrances yet.");
   assert.equal(describeNoRoute({ reason: "no_path", distance_m: null }, "Ell Hall"),
     "No path connects your start to Ell Hall.");
+});
+
+test("describeNoRoute names a picked start", () => {
+  assert.equal(describeNoRoute({ reason: "no_path", distance_m: null }, "Library", "walk", "Room G06"),
+    "No path connects Room G06 to Library.");
+  assert.equal(describeNoRoute({ reason: "no_path", distance_m: null }, "Library", "wheelchair", "Room G06"),
+    "No accessible path connects Room G06 to Library.");
+  assert.equal(describeNoRoute({ reason: "start_no_entrances", distance_m: null }, "Library", "walk", "Shed"),
+    "Shed has no mapped entrances to leave by.");
 });
 
 test("describeNoRoute unknown reason", () => {
@@ -274,6 +367,20 @@ test("switcherFloors merges the building's and the route's floors, top first", (
   assert.deepEqual(switcherFloors([], [1, 0]), [1, 0]);
   assert.deepEqual(switcherFloors([0, 1], []), [1, 0]);
   assert.deepEqual(switcherFloors([], []), []);
+});
+
+test("lastIndoorFloor and routeFloorFor", () => {
+  assert.equal(lastIndoorFloor(INDOOR_ROUTE), 1);
+  assert.equal(lastIndoorFloor(OUTDOOR_ROUTE), null);
+  const outAgain = { ...INDOOR_ROUTE, indoor: [false, true, true, false, false, false, false] };
+  assert.equal(lastIndoorFloor(outAgain), 0);
+  assert.equal(routeFloorFor(INDOOR_ROUTE, "start"), 0);
+  assert.equal(routeFloorFor(INDOOR_ROUTE, "end"), 1);
+});
+
+test("initialFloor for the destination's building uses the route's last indoor floor", () => {
+  assert.equal(initialFloor([0, 1], INDOOR_ROUTE, "end"), 1);
+  assert.equal(initialFloor([0, 1], OUTDOOR_ROUTE, "end"), 0);
 });
 
 test("initialFloor prefers the route's first indoor floor, else the building's ground floor", () => {

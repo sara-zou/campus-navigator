@@ -14,29 +14,71 @@ export function formatDuration(s) {
   return rest === 0 ? `${h} h` : `${h} h ${rest} min`;
 }
 
-const TARGET_PARAM = { building: "to_building", poi: "to_poi", entrance: "to_entrance" };
+// A place is one end of a route: {kind: "building" | "poi" | "entrance", id, name, building_id, ...}
+// (an entrance's id is its node_id), or, as a start only, {kind: "point", lat, lon, name}: a map click
+// or GPS, which the backend snaps. A point can't be a destination: /route can't route to one.
+const PLACE_KINDS = new Set(["building", "poi", "entrance"]);
 
-// start: {lat, lon}; destination: {kind: "building" | "poi" | "entrance", id}. An entrance's id is its node_id.
-export function routeParams(start, destination, mode) {
-  const target = TARGET_PARAM[destination.kind];
-  if (!target) throw new Error(`unknown destination kind ${JSON.stringify(destination.kind)}`); // a frontend bug
-  return new URLSearchParams({ lat: start.lat, lon: start.lon, [target]: destination.id, mode });
+// The /route param for a place at one end: from_building, to_poi, ...
+function placeParam(role, place) {
+  if (!PLACE_KINDS.has(place.kind)) {  // a frontend bug
+    throw new Error(`unknown ${role === "from" ? "start" : "destination"} kind ${JSON.stringify(place.kind)}`);
+  }
+  return `${role}_${place.kind}`;
 }
 
-// An "ok" /route response -> what the result box shows.
+export function routeParams(start, destination, mode) {
+  const params = new URLSearchParams();
+  if (start.kind === "point") {
+    params.set("lat", start.lat);
+    params.set("lon", start.lon);
+  } else {
+    params.set(placeParam("from", start), start.id);
+  }
+  params.set(placeParam("to", destination), destination.id);
+  params.set("mode", mode);
+  return params;
+}
+
+// The building a place belongs to: a building itself, a POI's or door's building_id; null for a point,
+// an outdoor place, or no place.
+export function placeBuildingId(place) {
+  if (place === null || place === undefined) return null;
+  if (place.kind === "building") return place.id;
+  return place.kind === "point" ? null : place.building_id ?? null;
+}
+
+// An "ok" /route response -> what the result box shows: {title, details} (details: lines, nulls skipped).
+// start, destination: the places the route was asked for. door(nodeId) -> {name, building_id} or null.
+//   title     the destination's name
+//   Leave by  a building start: the door the route left by (start_id)
+//   Enter by  the door into the building the route ends in (entrance_id is the *last* door on the path,
+//             so it's only an entry door if it belongs to that building), unless the destination is that
+//             door, or the start was already in that building (no door to enter by)
 // The distance includes the approach, because duration_s does too; otherwise the two wouldn't match.
-export function describeRoute(res) {
+export function describeRoute(res, start, destination, door) {
+  const doorName = (id) => door(id)?.name ?? "an entrance";
+  const leave = start.kind === "building" && res.start_id !== null ? `Leave by ${doorName(res.start_id)}` : null;
+  const last = res.entrance_id === null ? null : door(res.entrance_id);
+  const enters = last !== null && last.building_id === res.building_id && destination.kind !== "entrance"
+    && placeBuildingId(start) !== res.building_id;
   return {
-    title: res.entrance_name ?? "Entrance",
-    detail: `${formatDistance(res.approach_m + res.distance_m)} · ${formatDuration(res.duration_s)}`,
+    title: destination.name,
+    details: [
+      leave,
+      enters ? `Enter by ${res.entrance_name ?? last.name}` : null,
+      `${formatDistance(res.approach_m + res.distance_m)} · ${formatDuration(res.duration_s)}`,
+    ],
   };
 }
 
 // A "no_route" /route response -> one message per reason.
 // In wheelchair mode the backend only snaps to and routes over accessible edges, so say "accessible path":
 // "nearest path" would be wrong when an ordinary path is right next to you.
-export function describeNoRoute(res, destName, mode = "walk") {
+// startName: a picked start's name; null for a map point or GPS ("your start").
+export function describeNoRoute(res, destName, mode = "walk", startName = null) {
   const wheelchair = mode === "wheelchair";
+  const from = startName ?? "your start";
   switch (res.reason) {
     case "too_far":
       if (res.distance_m === null) {
@@ -47,10 +89,12 @@ export function describeNoRoute(res, destName, mode = "walk") {
         : `Your start is ${formatDistance(res.distance_m)} from the nearest path. Choose a start closer to campus.`;
     case "no_entrances":
       return `${destName} has no mapped entrances yet.`;
+    case "start_no_entrances":
+      return `${startName ?? "Your start"} has no mapped entrances to leave by.`;
     case "no_path":
       return wheelchair
-        ? `No accessible path connects your start to ${destName}.`
-        : `No path connects your start to ${destName}.`;
+        ? `No accessible path connects ${from} to ${destName}.`
+        : `No path connects ${from} to ${destName}.`;
     default:
       return `No route found (${res.reason}).`; // a reason this frontend doesn't know yet
   }
@@ -146,6 +190,17 @@ export function defaultFloor(res) {
   return i < 0 ? null : res.floors[i];
 }
 
+// Where its indoor part ends (null if it has none): the destination building's floor in the floor view.
+export function lastIndoorFloor(res) {
+  const i = res.indoor.lastIndexOf(true);
+  return i < 0 ? null : res.floors[i];
+}
+
+// The floor the route shows for one end's building: "start" -> its first indoor floor, "end" -> its last.
+export function routeFloorFor(res, end) {
+  return end === "end" ? lastIndoorFloor(res) : defaultFloor(res);
+}
+
 function verticalKind(change) {
   const tokens = change.edge_type === null ? [] : change.edge_type.split("+");
   return tokens.includes("elevator") ? "Elevator" : tokens.includes("steps") ? "Stairs" : null;
@@ -186,10 +241,11 @@ export function switcherFloors(buildingFloors, routeFloorList) {
   return [...new Set([...buildingFloors, ...routeFloorList])].sort((a, b) => b - a);
 }
 
-// The floor shown when the view opens: the route's first indoor floor if it has one, else the building's
-// ground floor (its lowest floor at or above 0), else its top floor (a building that is all basement).
-export function initialFloor(buildingFloors, route) {
-  const fromRoute = route ? defaultFloor(route) : null;
+// The floor shown when the view opens: the route's floor for this end ("start": its first indoor floor,
+// "end": its last) if it has one, else the building's ground floor (its lowest floor at or above 0), else
+// its top floor (a building that is all basement).
+export function initialFloor(buildingFloors, route, end = "start") {
+  const fromRoute = route ? routeFloorFor(route, end) : null;
   if (fromRoute !== null) return fromRoute;
   if (buildingFloors.length === 0) return null;
   const aboveGround = buildingFloors.filter((f) => f >= 0);
@@ -202,6 +258,16 @@ export function layoutPointStyle(point) {
   if (point.type === "entrance") return null;
   if (point.type === "stairs" || point.type === "elevator") return point.type;
   return point.poi_id !== null ? "place" : null;
+}
+
+// The buildings the floor view can show: the start's and the destination's, if they have an indoor map
+// (hasFloors(id)), start first, no repeats. Two entries -> the floor control offers a switch.
+// The start's building counts only for a POI start (a room): a building or door start leaves from the
+// door, so the route never goes inside it.
+export function focusChoices(start, destination, hasFloors) {
+  const startId = start?.kind === "poi" ? placeBuildingId(start) : null;
+  const ids = [startId, placeBuildingId(destination)].filter((id) => id !== null && hasFloors(id));
+  return [...new Set(ids)];
 }
 
 // --- search ---

@@ -275,6 +275,7 @@ class Route:
     distance_m: float          # along the graph: sum of the meters edges taken (floor changes excluded)
     approach_m: float          # GPS point -> snapped point, off the graph (not in coords); 0 for a node start
     duration_s: float          # (approach_m + distance_m) / the mode's speed + seconds edges
+    start_id: str | None       # node the path starts from (the door left by, for from_building); None for GPS
     end_id: str                # node reached
     entrance_id: str | None    # the door used: the last entrance on the path (= end_id when routing to a door)
     entrance_name: str | None  # name of a POI on that door (first by poi_id), if any
@@ -289,7 +290,7 @@ class Route:
 
 @dataclass(frozen=True)
 class NoRoute:
-    reason: str                       # "too_far" | "no_entrances" | "no_path"
+    reason: str                       # "too_far" | "no_entrances" | "start_no_entrances" | "no_path"
     distance_m: float | None = None   # too_far only: GPS point -> nearest usable edge
 
 
@@ -299,21 +300,24 @@ def is_entrance(campus, node_id):
     return node is not None and node.type == "entrance"
 
 
-def route(campus, lat=None, lon=None, *, from_poi=None, from_entrance=None,
+def route(campus, lat=None, lon=None, *, from_poi=None, from_entrance=None, from_building=None,
           to_building=None, to_poi=None, to_entrance=None, mode="walk"):
     """Route from a start to a building (its best entrance), a POI, or one specific entrance.
 
-    Start: a GPS point (lat and lon, snapped onto an outdoor edge), a POI (its node), or an
-    entrance's node_id. Exactly one start and exactly one of to_building / to_poi / to_entrance.
-    Caller bugs raise: not exactly one start or target, lat without lon, or unknown mode ->
-    ValueError; unknown building or POI, or a from_/to_entrance that isn't an entrance node ->
-    KeyError; bad lat/lon -> ValueError.
+    Start: a GPS point (lat and lon, snapped onto an outdoor edge), a POI (its node), an
+    entrance's node_id, or a building (leaving by its best entrance: every entrance is a
+    source, like to_building's targets). Exactly one start and exactly one of to_building /
+    to_poi / to_entrance. Caller bugs raise: not exactly one start or target, lat without lon,
+    or unknown mode -> ValueError; unknown building or POI, or a from_/to_entrance that isn't
+    an entrance node -> KeyError; bad lat/lon -> ValueError. A target building with no
+    entrances gives NoRoute("no_entrances"), checked before a start building with none
+    ("start_no_entrances").
     """
     gps = lat is not None or lon is not None
     if gps and (lat is None or lon is None):
         raise ValueError("give both lat and lon")
-    if gps + (from_poi is not None) + (from_entrance is not None) != 1:
-        raise ValueError("give exactly one start: lat/lon, from_poi, from_entrance")
+    if gps + sum(s is not None for s in (from_poi, from_entrance, from_building)) != 1:
+        raise ValueError("give exactly one start: lat/lon, from_poi, from_entrance, from_building")
     if sum(t is not None for t in (to_building, to_poi, to_entrance)) != 1:
         raise ValueError("give exactly one of to_building, to_poi, to_entrance")
     if mode not in MODES:
@@ -327,20 +331,39 @@ def route(campus, lat=None, lon=None, *, from_poi=None, from_entrance=None,
         targets = (campus.pois[to_poi].node_id,)
     else:
         targets = (_entrance(campus, to_entrance),)
-    start_node = None if gps else (
-        campus.pois[from_poi].node_id if from_poi is not None else _entrance(campus, from_entrance))
+    if from_poi is not None:
+        sources = (campus.pois[from_poi].node_id,)
+    elif from_entrance is not None:
+        sources = (_entrance(campus, from_entrance),)
+    elif from_building is not None:
+        sources = campus.entrances_for(from_building)
     if not targets:
         return NoRoute("no_entrances")
+    if not gps and not sources:
+        return NoRoute("start_no_entrances")
+    if from_building is not None:
+        # Leave only by a door passable in the mode. The door rule blocks a door's edges, but
+        # a source that is also a target needs none (X -> X would end at a stepped door).
+        sources = tuple(n for n in sources
+                        if any(cost_fn(e, n) is not IMPASSABLE for _, e in campus.adjacency[n]))
 
-    s = _start(campus, lat, lon, start_node, cost_fn)
-    if isinstance(s, TooFar):
-        return NoRoute("too_far", s.distance_m)
+    # A GPS point snaps onto an outdoor edge passable in the mode (maybe inserting START);
+    # picked nodes (POI, entrance, a building's entrances) need no snapping and may be indoors.
+    s = None
+    if gps:
+        s = snap(campus, lat, lon, cost_fn)
+        if isinstance(s, TooFar):
+            return NoRoute("too_far", s.distance_m)
+        sources, adjacency, approach = (s.node_id,), s.adjacency, s.distance_m
+    else:
+        adjacency, approach = campus.adjacency, 0.0
 
-    path = shortest_path(s.adjacency, {s.node_id}, targets, cost_fn)
+    path = shortest_path(adjacency, set(sources), targets, cost_fn)
     if isinstance(path, NoPath):
         return NoRoute("no_path")
 
-    coords = ((s.lat, s.lon),) + tuple(
+    first = (s.lat, s.lon) if gps else (campus.nodes[path.nodes[0]].x_or_lat, campus.nodes[path.nodes[0]].y_or_lon)
+    coords = (first,) + tuple(
         (campus.nodes[n].x_or_lat, campus.nodes[n].y_or_lon) for n in path.nodes[1:])
     meters, secs = _edge_totals(path.edges)
     floors, indoor, floor_changes = _floor_info(campus, path, s)
@@ -349,8 +372,9 @@ def route(campus, lat=None, lon=None, *, from_poi=None, from_entrance=None,
     return Route(
         coords=coords,
         distance_m=meters,
-        approach_m=s.distance_m,
-        duration_s=(s.distance_m + meters) / speed + secs,
+        approach_m=approach,
+        duration_s=(approach + meters) / speed + secs,
+        start_id=None if gps else path.nodes[0],
         end_id=end.id,
         entrance_id=door,
         entrance_name=poi_name_at(campus, door) if door is not None else None,
@@ -371,23 +395,11 @@ def _entrance(campus, node_id):
     return node_id
 
 
-def _start(campus, lat, lon, node_id, cost_fn):
-    """Where the route starts: the picked node as is, or the GPS point snapped (Snap | TooFar).
-
-    A picked node (from_poi / from_entrance) needs no snapping, may be indoors, and has no
-    approach. A GPS point snaps onto an outdoor edge passable in the mode.
-    """
-    if node_id is None:
-        return snap(campus, lat, lon, cost_fn)
-    n = campus.nodes[node_id]
-    return Snap(node_id, n.x_or_lat, n.y_or_lon, 0.0, campus.adjacency, n.floor)
-
-
 def _floor_info(campus, path, start):
     """(floors, indoor) per path node, and a FloorChange per edge whose ends' floors differ.
 
-    START isn't in campus.nodes: its floor comes from the Snap, and it's always outdoors
-    (snapping only uses outdoor edges).
+    START isn't in campus.nodes: its floor comes from the Snap (`start`, None for a node
+    start), and it's always outdoors (snapping only uses outdoor edges).
     """
     floors, indoor = [], []
     for n in path.nodes:

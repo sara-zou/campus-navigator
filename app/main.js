@@ -2,8 +2,9 @@
 // Coordinates: the API gives (lat, lon) everywhere except building geometry (GeoJSON [lon, lat]).
 
 import {
-  campusLabel, campusUrl, chooseCampus, describeRoomResult, searchParams, classifySegments, defaultFloor, describeFlags, describeFloors,
-  describeNoRoute, describeRoute, flagLabel, floorLabel, initialFloor, layoutPointStyle, moveBadge, routeFloors,
+  campusLabel, campusUrl, chooseCampus, describeRoomResult, searchParams, classifySegments, describeFlags, describeFloors,
+  describeNoRoute, describeRoute, flagLabel, floorLabel, focusChoices, initialFloor, layoutPointStyle, moveBadge,
+  placeBuildingId, routeFloorFor, routeFloors,
   routeParams, routeRuns, segmentVisible, switcherFloors, verticalMoves,
 } from "./helpers.js";
 
@@ -41,9 +42,11 @@ const ENTRANCE_STYLE = {
   radius: 5, color: "#fff", weight: 1.5, fillColor: "#dc2626", fillOpacity: 1, bubblingMouseEvents: false,
 };
 
-const HIGHLIGHT_STYLE = { weight: 4, fillOpacity: 0.3 };
+const HIGHLIGHT_STYLE = { weight: 4, fillOpacity: 0.3 }; // the destination's building
+const START_HIGHLIGHT_STYLE = { color: "#16a34a", weight: 3, fillOpacity: 0.2 }; // the start's (green, like its dot)
 
 const buildingsById = new Map(); // id -> building from /buildings
+const doorsById = new Map(); // entrance node_id -> {name, building_id}, for the result box's door lines
 const buildingLayers = new Map(); // id -> its Leaflet polygon layer, for highlighting
 let buildingsLayer = null; // the L.geoJSON group; resetStyle() restores a building's normal style
 const entrancesLayer = L.layerGroup().addTo(map); // every door dot, so a campus switch can clear them together
@@ -68,6 +71,7 @@ function drawBuildings(buildings) {
   // Entrances are (lat, lon). Added after the polygons so they sit on top.
   for (const b of buildings) {
     for (const e of b.entrances) {
+      doorsById.set(e.node_id, { name: e.name ?? `Entrance of ${b.name}`, building_id: b.id });
       const marker = L.circleMarker([e.lat, e.lon], ENTRANCE_STYLE)
         .bindTooltip(textEl(e.name ?? "Entrance"))
         .addTo(entrancesLayer);
@@ -90,45 +94,49 @@ function entrancePopup(building, entrance) {
   const routeHere = document.createElement("button");
   routeHere.type = "button";
   routeHere.textContent = "Route here";
+  const door = { kind: "entrance", id: entrance.node_id, name: label, building_id: building.id };
   routeHere.addEventListener("click", () => {
     map.closePopup();
-    pick({ kind: "entrance", id: entrance.node_id, name: label, building_id: building.id });
+    setPlace("to", door);
   });
   const startHere = document.createElement("button");
   startHere.type = "button";
   startHere.textContent = "Start here";
   startHere.addEventListener("click", () => {
     map.closePopup();
-    setStart(entrance.lat, entrance.lon); // snaps onto the door node itself
+    setPlace("from", door); // from_entrance: starts at the door node itself, no snapping
   });
   buttons.append(routeHere, startHere);
   box.append(title, sub, buttons);
   return box;
 }
 
-// --- start point: set by clicking the map or by "use my location"; the backend can't tell which ---
+// --- start: a place (see helpers.js): a map click or "use my location" gives a point, search and
+// popups give a building, POI or entrance ---
 
-let start = null; // {lat, lon} or null
+let start = null; // a place, or null
 let campusBounds = null; // L.LatLngBounds, set by loadCampus() when the campus has bounds
 const START_STYLE = { radius: 8, color: "#fff", weight: 3, fillColor: "#16a34a", fillOpacity: 1 };
 const startMarker = L.circleMarker([0, 0], START_STYLE); // moved, never recreated; added on first use
 
-// The only way to change the start; re-runs the route.
-function setStart(lat, lon) {
-  start = { lat, lon };
-  startMarker.setLatLng([lat, lon]);
+// The green dot: on a point start as soon as it's set. A picked place's position isn't known until the
+// route arrives (a building's door, a room), so its dot waits for the route's first point.
+function placeStartMarker() {
+  const at = start === null ? null : start.kind === "point" ? [start.lat, start.lon] : currentRoute?.coords[0] ?? null;
+  if (at === null) {
+    startMarker.remove();
+    return;
+  }
+  startMarker.setLatLng(at);
   if (!map.hasLayer(startMarker)) startMarker.addTo(map);
   startMarker.bringToFront();
-  showStatus("");
-  updateRoute();
 }
 
 // Clicks on buildings bubble up to the map, so they set the start too. Entrance dots don't (they open
 // their popup instead). A map click also closes the search lists: the user has moved on from typing.
 map.on("click", (e) => {
-  outdoorSearch.close();
-  roomSearch.close();
-  setStart(e.latlng.lat, e.latlng.lng);
+  for (const end of Object.values(endpoints)) end.close();
+  setPlace("from", { kind: "point", lat: e.latlng.lat, lon: e.latlng.lng, name: "Point on map" });
 });
 
 const GEO_ERRORS = {
@@ -156,7 +164,7 @@ const LocateControl = L.Control.extend({
         (pos) => {
           done();
           const { latitude: lat, longitude: lon } = pos.coords;
-          setStart(lat, lon);
+          setPlace("from", { kind: "point", lat, lon, name: "My location" });
           // Pad ~10% so someone just past the outermost path still counts as on campus.
           if (!campusBounds || campusBounds.pad(0.1).contains([lat, lon])) {
             map.panTo([lat, lon]);
@@ -178,35 +186,55 @@ const LocateControl = L.Control.extend({
 // Geolocation only exists in secure contexts (https, or localhost); otherwise there's no button.
 if ("geolocation" in navigator) new LocateControl().addTo(map);
 
-// --- destination: picked from search results or a door popup ---
+// --- destination: a place picked from search, a door popup or a floor-view room (never a point) ---
 
-let destination = null; // {kind: "building" | "poi" | "entrance", id, name} or null; an entrance's id is its node_id
-let highlightedId = null; // building id currently highlighted
+let destination = null; // a place (kind "building" | "poi" | "entrance"), or null
+let highlighted = { start: null, end: null }; // building ids drawn highlighted at each end
 
-// The highlighted building is also the focused one: if it has an indoor map, its floor view opens.
-function highlightBuilding(id) {
-  if (highlightedId !== null) buildingsLayer.resetStyle(buildingLayers.get(highlightedId));
-  highlightedId = buildingLayers.has(id) ? id : null;
-  if (highlightedId !== null) buildingLayers.get(highlightedId).setStyle(HIGHLIGHT_STYLE);
-  setFocus(highlightedId);
+function layerId(id) {
+  return id !== null && buildingLayers.has(id) ? id : null;
 }
 
-// The only way to change the destination.
-// result: a search result, or {kind: "entrance", id: node_id, name, building_id} from a door popup.
-function setDestination(result) {
-  destination = result ? { kind: result.kind, id: result.id, name: result.name } : null;
-  // A picked room's floor is shown until a route takes over the floor view (see refreshFloorView).
-  preferredFloor = result?.kind === "poi" ? result.floor ?? null : null;
-  // A POI highlights its building (search results and floor-view rooms carry building_id); the POI's own
-  // location still isn't known until a route comes back.
-  const highlight = { building: result?.id, entrance: result?.building_id, poi: result?.building_id }[result?.kind] ?? null;
-  highlightBuilding(highlight);
-  // With a start, the route fits the map once it arrives; zooming here too would jump twice.
-  if (highlightedId !== null && start === null) {
-    map.fitBounds(buildingLayers.get(highlightedId).getBounds(), { maxZoom: 18, padding: [40, 40] });
+// Highlights both ends' buildings (one building at both ends gets the destination's style) and keeps the
+// floor view on one of them. Once a route is in, the destination's building is the one it ends in.
+function updateEnds() {
+  for (const id of new Set([highlighted.start, highlighted.end])) {
+    if (id !== null) buildingsLayer.resetStyle(buildingLayers.get(id));
   }
-  if (start === null && floorsInView().includes(preferredFloor)) setViewedFloor(preferredFloor);
+  highlighted = {
+    start: layerId(placeBuildingId(start)),
+    end: layerId(currentRoute?.building_id ?? placeBuildingId(destination)),
+  };
+  if (highlighted.start !== null && highlighted.start !== highlighted.end) {
+    buildingLayers.get(highlighted.start).setStyle(START_HIGHLIGHT_STYLE);
+  }
+  if (highlighted.end !== null) buildingLayers.get(highlighted.end).setStyle(HIGHLIGHT_STYLE);
+  updateFocusChoices();
+}
+
+// The one way to change either end, or both at once (a swap): the state, highlights and boxes, then one
+// re-route. changes: {from?: place | null, to?: place | null}; a point can only be a start.
+function setPlaces(changes) {
+  if (changes.to?.kind === "point") throw new Error("a point can't be a destination"); // a frontend bug
+  if ("from" in changes) start = changes.from;
+  if ("to" in changes) destination = changes.to;
+  for (const role of Object.keys(changes)) endpoints[role].show(changes[role]);
+  showStatus("");
+  clearRoute(); // the old route's end building mustn't decide the highlights or the focus
+  updateEnds();
+  // Only one end set: no route will come to fit the map, so show that end's building and its room's floor.
+  // (With both, the route fits the map once it arrives; zooming here too would jump twice.)
+  const only = (start === null) !== (destination === null) ? start ?? destination : null;
+  const onlyId = layerId(placeBuildingId(only));
+  if (onlyId !== null) map.fitBounds(buildingLayers.get(onlyId).getBounds(), { maxZoom: 18, padding: [40, 40] });
+  const floor = preferredFloor();
+  if (only !== null && floorsInView().includes(floor)) setViewedFloor(floor);
+  updateSwap();
   updateRoute();
+}
+
+function setPlace(role, place) {
+  setPlaces({ [role]: place });
 }
 
 // --- mode: the radio buttons' values are the backend's MODES keys ---
@@ -284,13 +312,15 @@ function showRouteInfo(title, details = [], warning = null) {
 let currentRoute = null; // the "ok" /route response being shown, or null
 let viewedFloor = null; // the floor drawn at full strength (route and layout); null when no floors are in view
 
-// A vertical stack of floor buttons, top floor first. Shown while a route goes indoors or a building's
-// floor view is open.
+// A vertical stack of floor buttons, top floor first, under a building switch when both ends are in
+// different buildings with indoor maps. Shown while a route goes indoors or a building's floor view is open.
 const FloorControl = L.Control.extend({
   options: { position: "bottomright" },
   onAdd() {
     const box = L.DomUtil.create("div", "floor-switcher");
     box.hidden = true;
+    this.buildingList = L.DomUtil.create("div", "focus-switch", box);
+    this.floorList = L.DomUtil.create("div", "floor-list", box);
     L.DomEvent.disableClickPropagation(box); // a click here must not also move the start
     L.DomEvent.disableScrollPropagation(box);
     return box;
@@ -300,10 +330,12 @@ const floorControl = new FloorControl().addTo(map);
 
 // Same floors as already shown: only the pressed state changes, and the buttons stay in the page.
 // Rebuilding them mid-click would detach the clicked button; Leaflet then can't see that the click
-// came from a control and treats it as a map click, which moves the start.
+// came from a control and treats it as a map click, which moves the start. Same for the building switch.
 function renderFloorControl(floors) {
-  const box = floorControl.getContainer();
-  box.hidden = floors.length === 0;
+  const switchIds = focusChoiceIds.length > 1 ? focusChoiceIds : [];
+  floorControl.getContainer().hidden = floors.length === 0 && switchIds.length === 0;
+  renderFocusSwitch(switchIds);
+  const box = floorControl.floorList;
   const shownFloors = [...box.children].map((b) => Number(b.dataset.floor));
   if (shownFloors.length !== floors.length || shownFloors.some((f, i) => f !== floors[i])) {
     box.replaceChildren();
@@ -325,6 +357,32 @@ function renderFloorControl(floors) {
   }
 }
 
+// One button per building the floor view can show (start's first); [] hides the switch.
+function renderFocusSwitch(ids) {
+  const box = floorControl.buildingList;
+  box.hidden = ids.length === 0;
+  const shown = [...box.children].map((b) => b.dataset.building);
+  if (shown.length !== ids.length || shown.some((id, i) => id !== ids[i])) {
+    box.replaceChildren();
+    for (const id of ids) {
+      const name = buildingsById.get(id)?.name ?? id;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.building = id;
+      button.textContent = name;
+      button.title = `Show the floor plan of ${name}`;
+      button.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setFocus(id);
+      });
+      box.append(button);
+    }
+  }
+  for (const button of box.children) {
+    button.setAttribute("aria-pressed", String(button.dataset.building === focusId));
+  }
+}
+
 // --- floor view: the focused building's layout on viewedFloor (from /buildings/{id}/indoor) ---
 
 // Pane order: buildings and door dots (overlay, 400) < floor layout (405) < route (410) < markers (600).
@@ -336,11 +394,32 @@ const LAYOUT_PLACE_STYLE = {
   pane: "layout", radius: 4, color: "#fff", weight: 1, fillColor: "#475569", fillOpacity: 1, bubblingMouseEvents: false,
 };
 
-let focusId = null; // building whose floor view is open (the highlighted one, if it has floors), or null
+let focusId = null; // building whose floor view is open (one of focusChoiceIds), or null
 let focusLayout = null; // its /indoor response once loaded
-let preferredFloor = null; // a picked room's floor: shown while there's no route (set by setDestination)
+let focusChoiceIds = []; // focusChoices() for the current ends: the buildings the floor view can show
 const layoutCache = new Map(); // building id -> /indoor response, for the current campus
 let layoutAbort = null;
+
+// New choices (an end moved to another building) reset the focus to the first one: the start's building
+// (Sara's call: the route's first indoor floor is there). Same choices keep a building picked in the switch.
+function updateFocusChoices() {
+  const ids = focusChoices(start, destination, (id) => (buildingsById.get(id)?.floors.length ?? 0) > 0);
+  const same = ids.length === focusChoiceIds.length && ids.every((id, i) => id === focusChoiceIds[i]);
+  focusChoiceIds = ids;
+  if (!same || !ids.includes(focusId)) setFocus(ids[0] ?? null);
+  else renderFloorControl(floorsInView());
+}
+
+// Which end the focused building is: its route floor is the route's first indoor floor ("start") or last.
+function focusEnd() {
+  return focusId !== null && focusId === placeBuildingId(start) && start?.kind === "poi" ? "start" : "end";
+}
+
+// A picked room's floor at the focused end: shown while there's no route (see refreshFloorView).
+function preferredFloor() {
+  const place = focusEnd() === "start" ? start : destination;
+  return place?.kind === "poi" && placeBuildingId(place) === focusId ? place.floor ?? null : null;
+}
 
 function floorsInView() {
   return switcherFloors(focusLayout?.floors ?? [], currentRoute ? routeFloors(currentRoute) : []);
@@ -350,8 +429,9 @@ function floorsInView() {
 function refreshFloorView() {
   const floors = floorsInView();
   if (!floors.includes(viewedFloor)) {
-    const roomFloor = currentRoute === null && floors.includes(preferredFloor) ? preferredFloor : null;
-    viewedFloor = roomFloor ?? (floors.length > 0 ? initialFloor(focusLayout?.floors ?? [], currentRoute) : null);
+    const room = preferredFloor();
+    const roomFloor = currentRoute === null && floors.includes(room) ? room : null;
+    viewedFloor = roomFloor ?? (floors.length > 0 ? initialFloor(focusLayout?.floors ?? [], currentRoute, focusEnd()) : null);
   }
   renderLayout();
   if (currentRoute !== null) renderRouteLayers();
@@ -391,7 +471,7 @@ async function setFocus(id) {
   }
 }
 
-// Room popup, built from elements: name, floor, "Route here". ("Start here" from a room comes with step 6e.)
+// Room popup, built from elements: name, floor, "Route here" / "Start here".
 function placePopup(point, floor) {
   const box = document.createElement("div");
   box.className = "entrance-popup";
@@ -404,12 +484,19 @@ function placePopup(point, floor) {
   const routeHere = document.createElement("button");
   routeHere.type = "button";
   routeHere.textContent = "Route here";
-  const buildingId = focusId;
+  const room = { kind: "poi", id: point.poi_id, name: point.name, building_id: focusId, floor };
   routeHere.addEventListener("click", () => {
     map.closePopup();
-    pickRoom({ kind: "poi", id: point.poi_id, name: point.name, building_id: buildingId, floor });
+    setPlace("to", room);
   });
-  buttons.append(routeHere);
+  const startHere = document.createElement("button");
+  startHere.type = "button";
+  startHere.textContent = "Start here";
+  startHere.addEventListener("click", () => {
+    map.closePopup();
+    setPlace("from", room);
+  });
+  buttons.append(routeHere, startHere);
   box.append(title, sub, buttons);
   return box;
 }
@@ -445,6 +532,7 @@ function clearRoute() {
   routeAbort?.abort();
   routeLayer.clearLayers();
   currentRoute = null;
+  placeStartMarker(); // a picked place's dot leaves with its route
   showRouteInfo(null);
   refreshFloorView(); // the route's floors leave the switcher; a focused building's stay
 }
@@ -457,7 +545,7 @@ function renderRouteLayers() {
   const runs = routeRuns(res, viewedFloor).sort((a, b) => a.visible - b.visible);
   for (const run of runs) L.polyline(run.coords, run.visible ? ROUTE_STYLE : FADED_ROUTE_STYLE).addTo(routeLayer);
   // The approach (your point -> where you join the path) is off the graph, so it isn't in coords.
-  if (res.approach_m > MIN_APPROACH_DRAWN_M && start !== null) {
+  if (res.approach_m > MIN_APPROACH_DRAWN_M && start?.kind === "point") {
     L.polyline([[start.lat, start.lon], res.coords[0]], APPROACH_STYLE).addTo(routeLayer);
   }
   // Flag i is the segment coords[i] -> coords[i + 1]; only walking routes have any.
@@ -484,19 +572,22 @@ function renderRouteLayers() {
       .on("click", () => setViewedFloor(badge.target))
       .addTo(routeLayer);
   }
-  startMarker.bringToFront();
+  if (map.hasLayer(startMarker)) startMarker.bringToFront();
 }
 
 function drawRoute(res) {
   currentRoute = res;
-  highlightBuilding(res.building_id); // also covers a POI that belongs to a building; may change the focus
-  viewedFloor = defaultFloor(res) ?? viewedFloor; // follow the route in order; an outdoor route keeps the floor
+  placeStartMarker(); // a picked start's dot goes on the route's first point
+  updateEnds(); // the building the route ends in is now known; may change the focus
+  // the focused building's part of the route: the start's first indoor floor, the destination's last;
+  // an outdoor route keeps the floor
+  viewedFloor = routeFloorFor(res, focusEnd()) ?? viewedFloor;
   refreshFloorView();
   const bounds = L.latLngBounds(res.coords);
-  if (start !== null) bounds.extend([start.lat, start.lon]);
+  if (start?.kind === "point") bounds.extend([start.lat, start.lon]); // the approach line's far end
   map.fitBounds(bounds, { maxZoom: 18, padding: [40, 40] });
-  const { title, detail } = describeRoute(res);
-  showRouteInfo(title, [detail, describeFloors(res)], describeFlags(res.flags));
+  const { title, details } = describeRoute(res, start, destination, (id) => doorsById.get(id) ?? null);
+  showRouteInfo(title, [...details, describeFloors(res)], describeFlags(res.flags));
 }
 
 async function updateRoute() {
@@ -504,14 +595,14 @@ async function updateRoute() {
   if (start === null || destination === null || campusId === null) return;
   const ctrl = new AbortController();
   routeAbort = ctrl;
-  const dest = destination; // the values this request was made for
+  const [from, dest] = [start, destination]; // the values this request was made for
   const reqMode = mode;
   showRouteInfo("Finding route…");
   try {
-    const params = routeParams(start, dest, reqMode);
+    const params = routeParams(from, dest, reqMode);
     const res = await getJSON(`/campuses/${encodeURIComponent(campusId)}/route?${params}`, ctrl.signal);
     if (res.status === "ok") drawRoute(res);
-    else showRouteInfo("No route", [describeNoRoute(res, dest.name, reqMode)]);
+    else showRouteInfo("No route", [describeNoRoute(res, dest.name, reqMode, from.kind === "point" ? null : from.name)]);
   } catch (err) {
     if (err.name === "AbortError") return; // superseded by a newer start or destination
     showRouteInfo(null);
@@ -521,8 +612,9 @@ async function updateRoute() {
   }
 }
 
-// --- search: two boxes (Sara's two-level design). The outdoor box finds buildings and outdoor places;
-// once a building with an indoor map is picked, the room box below searches inside it (?building=). ---
+// --- search: each end of the route has two boxes (Sara's two-level design). The place box finds buildings
+// and outdoor places; once a building with an indoor map is picked, the room box below searches inside
+// it (?building=). ---
 
 const SEARCH_DELAY_MS = 200;
 const SEARCH_LIMIT = 10;
@@ -635,6 +727,70 @@ function makeSearchBox({ input, list, params, describe, onPick, onClear }) {
   };
 }
 
+// One end of the route ("from" or "to"): its place box and room box. What the boxes show always follows
+// the place (show), so a pick from anywhere (search, a popup, a map click, a swap) looks the same.
+function makeEndpoint(role) {
+  const roomBox = document.getElementById(`${role}-room-box`);
+  const roomInput = document.getElementById(`${role}-room-input`);
+  let roomBuilding = null; // {id, name}: the building the room box searches in, or null (box hidden)
+
+  const places = makeSearchBox({
+    input: document.getElementById(`${role}-input`),
+    list: document.getElementById(`${role}-results`),
+    params: (q) => searchParams(q, SEARCH_LIMIT),
+    describe: describeResult,
+    onPick: (r) => setPlace(role, r),
+    onClear: () => setPlace(role, null), // an emptied box drops this end, room included
+  });
+
+  const rooms = makeSearchBox({
+    input: roomInput,
+    list: document.getElementById(`${role}-room-results`),
+    params: (q) => (roomBuilding === null ? null : searchParams(q, SEARCH_LIMIT, roomBuilding.id)),
+    describe: describeRoomResult,
+    onPick: (r) => setPlace(role, r),
+    onClear: () => {
+      // back to the building itself (its best entrance)
+      if (roomBuilding !== null) {
+        setPlace(role, { kind: "building", id: roomBuilding.id, name: roomBuilding.name, building_id: roomBuilding.id });
+      }
+    },
+  });
+
+  // Show the room box for a building with an indoor map; hide it for anything else (null, no floors).
+  function setRoomBuilding(b) {
+    roomBuilding = b && b.floors.length > 0 ? { id: b.id, name: b.name } : null;
+    rooms.setText("");
+    roomBox.hidden = roomBuilding === null;
+    if (roomBuilding !== null) {
+      roomInput.placeholder = `Search rooms in ${roomBuilding.name}`;
+      roomInput.setAttribute("aria-label", `Search rooms in ${roomBuilding.name}`);
+    }
+  }
+
+  // A POI in a building with an indoor map shows as building + room (room-box results and floor-view
+  // rooms); a building opens its room box; anything else (outdoor place, door, point, null) is one line.
+  function show(place) {
+    const inBuilding = place?.kind === "poi" && place.building_id ? buildingsById.get(place.building_id) : null;
+    if (inBuilding && inBuilding.floors.length > 0) {
+      places.setText(inBuilding.name);
+      setRoomBuilding(inBuilding);
+      rooms.setText(place.name);
+      return;
+    }
+    places.setText(place?.name ?? "");
+    setRoomBuilding(place?.kind === "building" ? buildingsById.get(place.id) : null);
+  }
+
+  return {
+    show,
+    close() {
+      places.close();
+      rooms.close();
+    },
+  };
+}
+
 function describeResult(r) {
   if (r.kind === "building") return "Building";
   if (r.building_id === null) return "Place";
@@ -642,66 +798,21 @@ function describeResult(r) {
   return `Place in ${b ? b.name : r.building_id}`;
 }
 
-const searchInput = document.getElementById("search-input");
-const roomBox = document.getElementById("room-box");
-const roomInput = document.getElementById("room-input");
-let roomBuilding = null; // {id, name}: the building the room box searches in, or null (box hidden)
+const endpoints = { from: makeEndpoint("from"), to: makeEndpoint("to") };
 
-// Show the room box for a building with an indoor map; hide it for anything else (null, no floors).
-function setRoomBuilding(buildingId) {
-  const b = buildingId === null ? null : buildingsById.get(buildingId);
-  roomBuilding = b && b.floors.length > 0 ? { id: b.id, name: b.name } : null;
-  roomSearch.setText("");
-  roomBox.hidden = roomBuilding === null;
-  if (roomBuilding !== null) {
-    roomInput.placeholder = `Search rooms in ${roomBuilding.name}`;
-    roomInput.setAttribute("aria-label", `Search rooms in ${roomBuilding.name}`);
-  }
+// The swap button: a point (map click, GPS) can't be a destination, so it only works with place starts.
+const swapButton = document.getElementById("swap-button");
+
+function updateSwap() {
+  const point = start?.kind === "point";
+  swapButton.disabled = point || (start === null && destination === null);
+  swapButton.title = point ? "A point on the map can't be a destination" : "Swap start and destination";
 }
 
-// Destination from the outdoor box or a door popup. A building opens the room box; anything else hides it.
-// result: a search result, or {kind: "entrance", id: node_id, name, building_id} from a door popup.
-function pick(result) {
-  outdoorSearch.setText(result.name);
-  setRoomBuilding(result.kind === "building" ? result.id : null);
-  setDestination(result);
-}
-
-// A room (a POI inside roomBuilding's building) from the room box or a floor-view dot. The outdoor box
-// shows the building, the room box the room.
-function pickRoom(result) {
-  const b = buildingsById.get(result.building_id);
-  if (roomBuilding?.id !== result.building_id) {
-    outdoorSearch.setText(b ? b.name : result.building_id);
-    setRoomBuilding(result.building_id);
-  }
-  roomSearch.setText(result.name);
-  setDestination(result);
-}
-
-const outdoorSearch = makeSearchBox({
-  input: searchInput,
-  list: document.getElementById("search-results"),
-  params: (q) => searchParams(q, SEARCH_LIMIT),
-  describe: describeResult,
-  onPick: pick,
-  onClear: () => {
-    setRoomBuilding(null);
-    setDestination(null); // an emptied box drops the destination, room included
-  },
+swapButton.addEventListener("click", () => {
+  if (!swapButton.disabled) setPlaces({ from: destination, to: start });
 });
-
-const roomSearch = makeSearchBox({
-  input: roomInput,
-  list: document.getElementById("room-results"),
-  params: (q) => (roomBuilding === null ? null : searchParams(q, SEARCH_LIMIT, roomBuilding.id)),
-  describe: describeRoomResult,
-  onPick: pickRoom,
-  onClear: () => {
-    // back to routing to the building itself (its best entrance)
-    if (roomBuilding !== null) setDestination({ kind: "building", id: roomBuilding.id, name: roomBuilding.name });
-  },
-});
+updateSwap();
 
 // --- campus: picked in the dropdown, kept in the URL as ?campus=<id> ---
 
@@ -710,19 +821,21 @@ let campusAbort = null; // cancels the previous campus's /buildings request, so 
 
 // Everything tied to the current campus: its ids mean nothing on another campus.
 function clearCampus() {
-  outdoorSearch.setText("");
-  setRoomBuilding(null);
+  for (const end of Object.values(endpoints)) end.show(null);
   destination = null;
-  highlightedId = null;
+  start = null;
+  highlighted = { start: null, end: null };
   clearRoute();
+  focusChoiceIds = [];
   setFocus(null);
   layoutCache.clear();
-  start = null;
   startMarker.remove();
+  updateSwap();
   map.closePopup();
   buildingsLayer?.remove();
   buildingsLayer = null;
   buildingsById.clear();
+  doorsById.clear();
   buildingLayers.clear();
   entrancesLayer.clearLayers();
   campusBounds = null;
