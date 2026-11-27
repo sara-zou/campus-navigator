@@ -25,6 +25,12 @@
                aria-label="Search rooms" autocomplete="off">
         <ul id="from-room-results" class="search-results" hidden></ul>
       </div>
+      <!-- A point start inside a building with an indoor map: offer its rooms (GPS has no floor). -->
+      <div id="inside-prompt" class="inside-prompt" hidden>
+        <span class="inside-text"></span>
+        <button id="inside-pick" type="button">Pick a room</button>
+        <button id="inside-dismiss" type="button" aria-label="Dismiss">×</button>
+      </div>
       <!-- on the line between From and To, wherever From ends (its room box or results may be open) -->
       <button id="swap-button" type="button" aria-label="Swap start and destination" disabled>⇅</button>
     </div>

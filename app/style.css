@@ -108,6 +108,44 @@ html, body {
   cursor: not-allowed;
 }
 
+.inside-prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 44px 8px 12px; /* right: clear of the swap button */
+  border-top: 1px solid #e5e7eb;
+  background: #f0fdf4;
+  font-size: 14px;
+}
+
+.inside-prompt[hidden] {
+  display: none;
+}
+
+.inside-text {
+  flex: 1;
+}
+
+#inside-pick {
+  padding: 4px 8px;
+  border: 1px solid #16a34a;
+  border-radius: 4px;
+  background: #fff;
+  color: #15803d;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#inside-dismiss {
+  border: none;
+  background: none;
+  color: #6b7280;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
 .endpoint + .endpoint {
   border-top: 1px solid #e5e7eb;
 }

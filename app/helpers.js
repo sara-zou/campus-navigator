@@ -260,14 +260,46 @@ export function layoutPointStyle(point) {
   return point.poi_id !== null ? "place" : null;
 }
 
-// The buildings the floor view can show: the start's and the destination's, if they have an indoor map
-// (hasFloors(id)), start first, no repeats. Two entries -> the floor control offers a switch.
-// The start's building counts only for a POI start (a room): a building or door start leaves from the
-// door, so the route never goes inside it.
-export function focusChoices(start, destination, hasFloors) {
-  const startId = start?.kind === "poi" ? placeBuildingId(start) : null;
+// The building whose plan the start end can show: a POI start's (a room). A building or door start leaves
+// from the door, so the route never goes inside it; a point has none, unless the "you're inside" prompt's
+// [Pick a room] offered its building (offeredId).
+export function startFocusId(start, offeredId = null) {
+  if (start?.kind === "poi") return placeBuildingId(start);
+  return start?.kind === "point" ? offeredId : null;
+}
+
+// The buildings the floor view can show: the start end's (startFocusId) and the destination's, if they
+// have an indoor map (hasFloors(id)), start first, no repeats. Two entries -> the floor control offers a switch.
+export function focusChoices(startId, destination, hasFloors) {
   const ids = [startId, placeBuildingId(destination)].filter((id) => id !== null && hasFloors(id));
   return [...new Set(ids)];
+}
+
+// --- inside a building ---
+
+// Ray casting: is (lon, lat) inside this ring of [lon, lat] points (closed or not)?
+function inRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+// Is (lat, lon) inside a GeoJSON Polygon or MultiPolygon ([lon, lat] order)? A polygon's first ring is
+// its outline and the rest are holes; a point in a hole is outside.
+export function pointInGeometry(lat, lon, geometry) {
+  const polygons = geometry.type === "Polygon" ? [geometry.coordinates]
+    : geometry.type === "MultiPolygon" ? geometry.coordinates : [];
+  return polygons.some(([outer, ...holes]) => inRing(lon, lat, outer) && !holes.some((h) => inRing(lon, lat, h)));
+}
+
+// The building with an indoor map that (lat, lon) falls inside, or null. Buildings without one get no
+// "you're inside" prompt: there are no rooms to start from.
+export function indoorBuildingAt(lat, lon, buildings) {
+  return buildings.find((b) => b.floors.length > 0 && pointInGeometry(lat, lon, b.geometry)) ?? null;
 }
 
 // --- doors ---

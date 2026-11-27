@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  campusLabel, campusUrl, doorDetails, focusChoices, lastIndoorFloor, placeBuildingId, routeFloorFor, chooseCampus, describeRoomResult, searchParams, classifySegments, defaultFloor, describeFloors, floorLabel, initialFloor,
+  campusLabel, campusUrl, doorDetails, focusChoices, indoorBuildingAt, pointInGeometry, startFocusId, lastIndoorFloor, placeBuildingId, routeFloorFor, chooseCampus, describeRoomResult, searchParams, classifySegments, defaultFloor, describeFloors, floorLabel, initialFloor,
   layoutPointStyle, moveBadge, switcherFloors,
   routeFloors, routeRuns, segmentVisible, verticalMoves, describeFlags, describeNoRoute, describeRoute, flagLabel, flagSections, formatDistance, formatDuration, isSteps,
   routeParams,
@@ -135,21 +135,56 @@ test("placeBuildingId", () => {
   assert.equal(placeBuildingId(null), null);
 });
 
+test("startFocusId: a room's building, an offered building for a point, else null", () => {
+  assert.equal(startFocusId({ kind: "poi", id: "p1", building_id: "lib" }), "lib");
+  assert.equal(startFocusId({ kind: "building", id: "lib", name: "Library" }), null);  // leaves from the door
+  assert.equal(startFocusId({ kind: "entrance", id: "e", building_id: "lib" }, "lib"), null);
+  assert.equal(startFocusId(POINT), null);
+  assert.equal(startFocusId(POINT, "hall"), "hall");                                     // [Pick a room]
+  assert.equal(startFocusId(null, "hall"), null);
+});
+
 test("focusChoices: start first, only buildings with floors, no repeats", () => {
   const hasFloors = (id) => id === "hall" || id === "lib";
-  const lib = { kind: "building", id: "lib", name: "Library" };
-  const cafe = { kind: "building", id: "cafe", name: "Cafe" };
-  const libRoom = { kind: "poi", id: "p1", name: "Room 101", building_id: "lib" };
-  const cafeRoom = { kind: "poi", id: "p2", name: "Counter", building_id: "cafe" };
-  assert.deepEqual(focusChoices(libRoom, HALL, hasFloors), ["lib", "hall"]);
-  assert.deepEqual(focusChoices(POINT, HALL, hasFloors), ["hall"]);
-  assert.deepEqual(focusChoices(cafeRoom, HALL, hasFloors), ["hall"]);
-  assert.deepEqual(focusChoices(libRoom, { kind: "poi", id: "p", building_id: "lib" }, hasFloors), ["lib"]);
-  assert.deepEqual(focusChoices(libRoom, null, hasFloors), ["lib"]);
-  // a building or door start leaves from outside: its plan isn't offered
-  assert.deepEqual(focusChoices(lib, HALL, hasFloors), ["hall"]);
-  assert.deepEqual(focusChoices({ kind: "entrance", id: "e", building_id: "lib" }, null, hasFloors), []);
+  assert.deepEqual(focusChoices("lib", HALL, hasFloors), ["lib", "hall"]);
+  assert.deepEqual(focusChoices(null, HALL, hasFloors), ["hall"]);
+  assert.deepEqual(focusChoices("cafe", HALL, hasFloors), ["hall"]);
+  assert.deepEqual(focusChoices("lib", { kind: "poi", id: "p", building_id: "lib" }, hasFloors), ["lib"]);
+  assert.deepEqual(focusChoices("lib", null, hasFloors), ["lib"]);
   assert.deepEqual(focusChoices(null, null, hasFloors), []);
+});
+
+// A 10 x 10 square (lon 0..10, lat 0..10) with a 2 x 2 hole at 4..6, and a second part at lon 20..22.
+const SQUARE = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]];
+const HOLE = [[4, 4], [6, 4], [6, 6], [4, 6], [4, 4]];
+const FAR = [[20, 0], [22, 0], [22, 2], [20, 2], [20, 0]];
+
+test("pointInGeometry: Polygon (lat, lon in; [lon, lat] rings)", () => {
+  const poly = { type: "Polygon", coordinates: [SQUARE] };
+  assert.equal(pointInGeometry(2, 8, poly), true);
+  assert.equal(pointInGeometry(8, 12, poly), false);    // lon 12 is outside
+  assert.equal(pointInGeometry(12, 8, poly), false);    // lat 12 is outside
+});
+
+test("pointInGeometry: a hole is outside", () => {
+  const poly = { type: "Polygon", coordinates: [SQUARE, HOLE] };
+  assert.equal(pointInGeometry(5, 5, poly), false);
+  assert.equal(pointInGeometry(2, 2, poly), true);
+});
+
+test("pointInGeometry: MultiPolygon, any part; other types never contain", () => {
+  const multi = { type: "MultiPolygon", coordinates: [[SQUARE], [FAR]] };
+  assert.equal(pointInGeometry(1, 21, multi), true);
+  assert.equal(pointInGeometry(1, 15, multi), false);
+  assert.equal(pointInGeometry(1, 1, { type: "Point", coordinates: [1, 1] }), false);
+});
+
+test("indoorBuildingAt: only buildings with an indoor map", () => {
+  const plain = { id: "cafe", floors: [], geometry: { type: "Polygon", coordinates: [SQUARE] } };
+  const indoor = { id: "hall", floors: [0, 1], geometry: { type: "Polygon", coordinates: [SQUARE] } };
+  assert.equal(indoorBuildingAt(2, 2, [plain]), null);
+  assert.equal(indoorBuildingAt(2, 2, [plain, indoor]).id, "hall");
+  assert.equal(indoorBuildingAt(50, 50, [indoor]), null);
 });
 
 test("describeNoRoute too_far with a distance", () => {

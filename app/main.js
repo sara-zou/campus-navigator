@@ -2,7 +2,7 @@
 // Coordinates: the API gives (lat, lon) everywhere except building geometry (GeoJSON [lon, lat]).
 
 import {
-  campusLabel, campusUrl, chooseCampus, doorDetails, describeRoomResult, searchParams, classifySegments, describeFlags, describeFloors,
+  campusLabel, campusUrl, chooseCampus, doorDetails, indoorBuildingAt, startFocusId, describeRoomResult, searchParams, classifySegments, describeFlags, describeFloors,
   describeNoRoute, describeRoute, flagLabel, floorLabel, focusChoices, initialFloor, layoutPointStyle, moveBadge,
   placeBuildingId, routeFloorFor, routeFloors,
   routeParams, routeRuns, segmentVisible, switcherFloors, verticalMoves,
@@ -216,7 +216,7 @@ function updateEnds() {
     if (id !== null) buildingsLayer.resetStyle(buildingLayers.get(id));
   }
   highlighted = {
-    start: layerId(placeBuildingId(start)),
+    start: layerId(placeBuildingId(start) ?? offeredId),
     end: layerId(currentRoute?.building_id ?? placeBuildingId(destination)),
   };
   if (highlighted.start !== null && highlighted.start !== highlighted.end) {
@@ -230,7 +230,11 @@ function updateEnds() {
 // re-route. changes: {from?: place | null, to?: place | null}; a point can only be a start.
 function setPlaces(changes) {
   if (changes.to?.kind === "point") throw new Error("a point can't be a destination"); // a frontend bug
-  if ("from" in changes) start = changes.from;
+  if ("from" in changes) {
+    start = changes.from;
+    offeredId = null; // a new start ends any [Pick a room] offer
+    updateInsidePrompt();
+  }
   if ("to" in changes) destination = changes.to;
   for (const role of Object.keys(changes)) endpoints[role].show(changes[role]);
   showStatus("");
@@ -250,6 +254,36 @@ function setPlaces(changes) {
 function setPlace(role, place) {
   setPlaces({ [role]: place });
 }
+
+// --- "you're inside <building>": a point start (GPS or map click) inside a building with an indoor map ---
+
+const insidePrompt = document.getElementById("inside-prompt");
+let insideBuilding = null; // the building the prompt is about, or null (hidden)
+let offeredId = null; // its id once [Pick a room] was pressed, until the start changes
+
+function updateInsidePrompt() {
+  insideBuilding = start?.kind === "point" ? indoorBuildingAt(start.lat, start.lon, [...buildingsById.values()]) : null;
+  insidePrompt.hidden = insideBuilding === null;
+  if (insideBuilding !== null) {
+    insidePrompt.querySelector(".inside-text").textContent = `You're inside ${insideBuilding.name}. Start from a room?`;
+  }
+}
+
+// GPS has no floor, so a room is the way to say where inside you are. The point stays the start (it
+// snaps to the nearest outdoor path) until a room is picked: a building start would leave by a door,
+// wrong for a destination in the same building.
+document.getElementById("inside-pick").addEventListener("click", () => {
+  const b = insideBuilding;
+  if (b === null) return;
+  insidePrompt.hidden = true;
+  offeredId = b.id;
+  endpoints.from.offerRooms(b);
+  updateEnds(); // highlights it as the start's building and opens its floor view
+});
+
+document.getElementById("inside-dismiss").addEventListener("click", () => {
+  insidePrompt.hidden = true;
+});
 
 // --- mode: the radio buttons' values are the backend's MODES keys ---
 
@@ -417,7 +451,8 @@ let layoutAbort = null;
 // New choices (an end moved to another building) reset the focus to the first one: the start's building
 // (Sara's call: the route's first indoor floor is there). Same choices keep a building picked in the switch.
 function updateFocusChoices() {
-  const ids = focusChoices(start, destination, (id) => (buildingsById.get(id)?.floors.length ?? 0) > 0);
+  const hasFloors = (id) => (buildingsById.get(id)?.floors.length ?? 0) > 0;
+  const ids = focusChoices(startFocusId(start, offeredId), destination, hasFloors);
   const same = ids.length === focusChoiceIds.length && ids.every((id, i) => id === focusChoiceIds[i]);
   focusChoiceIds = ids;
   if (!same || !ids.includes(focusId)) setFocus(ids[0] ?? null);
@@ -426,7 +461,7 @@ function updateFocusChoices() {
 
 // Which end the focused building is: its route floor is the route's first indoor floor ("start") or last.
 function focusEnd() {
-  return focusId !== null && focusId === placeBuildingId(start) && start?.kind === "poi" ? "start" : "end";
+  return focusId !== null && focusId === startFocusId(start, offeredId) ? "start" : "end";
 }
 
 // A picked room's floor at the focused end: shown while there's no route (see refreshFloorView).
@@ -747,6 +782,7 @@ function makeEndpoint(role) {
   const roomBox = document.getElementById(`${role}-room-box`);
   const roomInput = document.getElementById(`${role}-room-input`);
   let roomBuilding = null; // {id, name}: the building the room box searches in, or null (box hidden)
+  let offering = false; // the room box is open for a [Pick a room] offer; the end's place isn't that building
 
   const places = makeSearchBox({
     input: document.getElementById(`${role}-input`),
@@ -764,8 +800,8 @@ function makeEndpoint(role) {
     describe: describeRoomResult,
     onPick: (r) => setPlace(role, r),
     onClear: () => {
-      // back to the building itself (its best entrance)
-      if (roomBuilding !== null) {
+      // back to the building itself (its best entrance); during an offer, the place (a point) stays
+      if (roomBuilding !== null && !offering) {
         setPlace(role, { kind: "building", id: roomBuilding.id, name: roomBuilding.name, building_id: roomBuilding.id });
       }
     },
@@ -785,6 +821,7 @@ function makeEndpoint(role) {
   // A POI in a building with an indoor map shows as building + room (room-box results and floor-view
   // rooms); a building opens its room box; anything else (outdoor place, door, point, null) is one line.
   function show(place) {
+    offering = false;
     const inBuilding = place?.kind === "poi" && place.building_id ? buildingsById.get(place.building_id) : null;
     if (inBuilding && inBuilding.floors.length > 0) {
       places.setText(inBuilding.name);
@@ -796,8 +833,16 @@ function makeEndpoint(role) {
     setRoomBuilding(place?.kind === "building" ? buildingsById.get(place.id) : null);
   }
 
+  // Open the room box for building b while the end keeps its place (a point): picking a room replaces it.
+  function offerRooms(b) {
+    setRoomBuilding(b);
+    offering = true;
+    roomInput.focus();
+  }
+
   return {
     show,
+    offerRooms,
     close() {
       places.close();
       rooms.close();
@@ -839,6 +884,9 @@ function clearCampus() {
   destination = null;
   start = null;
   highlighted = { start: null, end: null };
+  offeredId = null;
+  insideBuilding = null;
+  insidePrompt.hidden = true;
   clearRoute();
   focusChoiceIds = [];
   setFocus(null);
