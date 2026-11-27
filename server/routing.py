@@ -15,7 +15,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from loader import Edge
+from models import Edge
 
 IMPASSABLE = None
 

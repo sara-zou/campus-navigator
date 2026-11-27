@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 
+from loader import load_campus
+from query import START
+
 FIXTURE = Path(__file__).parent / "fixtures" / "tiny-campus"
 # One building "hq", two floors: south door e1 (floor 0, accessible) and north door e2 (floor 1,
 # up a hill, accessible=False); stairs s0-s1 (15 s, steps) and elevator l0-l1 (35 s); room r101 on
@@ -53,3 +56,24 @@ def copy_campus(src, dest_root, campus_id):
     text = (dest / "nodes.csv").read_text().replace(f",{src.name},", f",{campus_id},")
     (dest / "nodes.csv").write_text(text)
     return dest
+
+
+@pytest.fixture
+def campus(tiny_campus):
+    """tiny-campus, loaded. Nodes (lat, lon):
+      w1 (42.0005, -71.0005)  w2 (42.0005, -71.0015)  w3 (42.0025, -71.0015)
+      eA1 (42.0009, -71.0005) eA2 (42.0021, -71.0005)  island i1 (42.0050, -71.0050) i2 (42.0055, -71.0050)
+    Edges: eA1-w1 44.5, w1-w2 82.8, w2-w3 222.4 (vertical), w3-eA2 93.7, steps w1-w3 240.0 (diagonal, not accessible)
+    """
+    return load_campus(tiny_campus)
+
+
+@pytest.fixture
+def indoor(tiny_indoor):
+    """tiny-indoor, loaded."""
+    return load_campus(tiny_indoor)
+
+
+def start_neighbors(s):
+    """Sorted neighbours of the temporary START node in a Snap's overlay adjacency."""
+    return sorted(n for n, _ in s.adjacency[START])

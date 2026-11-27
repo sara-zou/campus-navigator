@@ -2,7 +2,8 @@ from pathlib import Path as FsPath
 
 import pytest
 
-from loader import Edge, Node, load_campus
+from loader import load_campus
+from models import Edge, Node
 from routing import IMPASSABLE, NoPath, Path, shortest_path, walk, wheelchair
 
 # tiny-campus graph:  eA1 -44.5- w1 -82.8- w2 -222.4- w3 -93.7- eA2
@@ -105,11 +106,6 @@ def test_wheelchair_unknown_node_is_not_a_door():
 
 
 # --- shortest_path ---
-
-@pytest.fixture
-def campus(tiny_campus):
-    return load_campus(tiny_campus)
-
 
 def test_walking_takes_the_steps(campus):
     path = shortest_path(campus.adjacency, ["eA1"], ["eA2"], WALK)

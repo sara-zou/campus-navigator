@@ -6,9 +6,10 @@ import pytest
 
 from conftest import INDOOR_FIXTURE, copy_campus
 from loader import (
-    BUILDING_COLS, Campus, LoadError, check_latlon, distance_to_bbox_m, load_all, load_campus, check_one_of, load_buildings, load_edges, load_nodes, load_pois, read_rows,
+    BUILDING_COLS, LoadError, check_latlon, distance_to_bbox_m, load_all, load_campus, check_one_of, load_buildings, load_edges, load_nodes, load_pois, read_rows,
     require, to_bool, to_bool_or_none, to_float, to_int,
 )
+from models import Campus
 
 
 def set_cell(line, col, value):

@@ -7,10 +7,11 @@ import csv
 import json
 import math
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+
+from geo import haversine_m
+from models import POI, Building, Campus, Edge, Node
 
 CAMPUS_ID_PATTERN = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")  # becomes /campuses/{id} in the API
 SWAP_CHECK_M = 50_000     # building points must be this close to the nodes' bbox
@@ -28,67 +29,6 @@ COST_UNITS = {"meters", "seconds"}  # seconds: stairs and elevators, whose cost 
 POI_COLS = ["poi_id", "node_id", "name", "category", "building_id", "floor", "accessible", "notes"]
 
 CAMPUS_COLS = ["name"]  # campus.csv: optional, exactly one row; missing file = the name is the id
-
-
-@dataclass(frozen=True)
-class Building:
-    id: str
-    name: str
-    geometry: dict  # parsed GeoJSON Polygon or MultiPolygon, [lon, lat] order
-
-
-@dataclass(frozen=True)
-class Node:
-    id: str
-    campus_id: str
-    building_id: str | None  # None for outdoor waypoints
-    floor: int               # integer index; negatives are basements
-    coord_system: str
-    x_or_lat: float
-    y_or_lon: float
-    type: str                # open set; only "entrance" has special rules
-    accessible: bool | None = None  # read for entrances only: is the door wheelchair-accessible? None = unknown
-    indoor: bool = False     # inside a building or enclosed space; snapping uses only edges with both ends outdoor
-
-
-@dataclass(frozen=True)
-class Edge:
-    from_node: str
-    to_node: str
-    cost: float
-    cost_unit: str
-    edge_type: str | None    # open set; None if not given
-    accessible: bool | None  # None = unknown
-
-
-@dataclass(frozen=True)
-class POI:
-    id: str
-    node_id: str             # where routing goes; not part of the graph itself
-    name: str
-    category: str | None     # open set
-    building_id: str | None
-    floor: int | None        # the place's floor; may differ from its node's (e.g. a room reached via an entrance)
-    accessible: bool | None  # the place itself (e.g. an accessible restroom), separate from edges
-    notes: str | None
-
-
-@dataclass(frozen=True)
-class Campus:
-    """One fully validated campus. Read-only: mappings are MappingProxyType, sequences are tuples."""
-    id: str
-    name: str                # display name from campus.csv, else the id
-    buildings: Mapping[str, Building]
-    nodes: Mapping[str, Node]
-    adjacency: Mapping[str, tuple[tuple[str, Edge], ...]]     # node_id -> ((neighbor_id, Edge), ...)
-    entrances_by_building: Mapping[str, tuple[str, ...]]     # only buildings that have entrances
-    pois: Mapping[str, POI]
-
-    def entrances_for(self, building_id):
-        """Entrance node ids for a building; () if it has none. KeyError if the building doesn't exist."""
-        if building_id not in self.buildings:
-            raise KeyError(building_id)
-        return self.entrances_by_building.get(building_id, ())
 
 
 class LoadError(Exception):
@@ -355,13 +295,6 @@ def load_pois(campus_dir, nodes, buildings):
 
 
 # --- cross-file checks ---
-
-def haversine_m(lat1, lon1, lat2, lon2):
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dphi, dlmb = p2 - p1, math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
-    return 2 * 6_371_000 * math.asin(math.sqrt(a))
-
 
 def geometry_latlons(geometry):
     """Every (lat, lon) point in a Polygon or MultiPolygon (GeoJSON stores [lon, lat])."""
